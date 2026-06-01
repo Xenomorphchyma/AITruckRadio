@@ -634,6 +634,8 @@ class RadioEngine:
             host['omnivoice_ref_audio'] = str(ref_audio)
             if ref_text.exists():
                 host['omnivoice_ref_text'] = str(ref_text)
+        else:
+            host['omnivoice_mode'] = 'design'
         return host
 
     def _guest_ref_status(self) -> Dict[str, Any]:
@@ -713,8 +715,6 @@ class RadioEngine:
             return {}
         if (not planned) and not self.cfg.get('entertainment_in_live', True):
             return {}
-        if (self.speech_blocks_played - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
-            return {}
         # Ответ на загадку имеет приоритет и должен выйти на следующей речи.
         if self.pending_riddle:
             r = self.pending_riddle
@@ -731,6 +731,8 @@ class RadioEngine:
                 'dj_length': 'medium',
                 'riddle_answer_block': True,
             }
+        if (self.speech_blocks_played - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
+            return {}
         if random.random() > float(self.cfg.get('entertainment_chance', 0.55) or 0.55):
             return {}
         pack = self.prepare_entertainment_pack('block')

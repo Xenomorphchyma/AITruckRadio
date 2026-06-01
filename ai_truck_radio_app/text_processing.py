@@ -344,10 +344,10 @@ def repair_time_context_text(text: str, ctx: Optional[Dict[str, Any]] = None) ->
     ctx = ctx or {}
     hour = int(ctx.get("computer_hour", time.localtime().tm_hour) or 0)
     if expected_daypart_for_hour(hour) == "утро":
-        text = re.sub(r"(?i)добрый\s+вечер", "Доброе утро", text)
-        text = re.sub(r"(?i)сегодня\s+ночью", "сегодня утром", text)
-        text = re.sub(r"(?i)вечерн(?:ий|яя|ее|его|ем|им)", "утренний", text)
-        text = re.sub(r"(?i)праздник\s+вечера", "праздник этого эфира", text)
+        text = re.sub(r"(?i)\bдобрый\s+вечер\b", "Доброе утро", text)
+        text = re.sub(r"(?i)\bсегодня\s+ночью\b", "сегодня утром", text)
+        text = re.sub(r"(?i)\bвечерн(?:ий|яя|ее|его|ем|им)\b", "утренний", text)
+        text = re.sub(r"(?i)\bпраздник\s+вечера\b", "праздник этого эфира", text)
     if expected_daypart_for_hour(hour) == "день":
         text = re.sub(r"(?i)\bдобрый\s+вечер\b", "Добрый день", text)
         text = re.sub(r"(?i)\bуже\s+почти\s+полночь\b", f"сейчас {ctx.get('time_text') or _current_time_text()}", text)

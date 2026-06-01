@@ -494,15 +494,21 @@ class TTS:
     def text_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
-    def _voice_cfg_for_host(self, host_name: Optional[str]) -> Dict[str, Any]:
+    def _voice_cfg_for_host(self, host_name: Optional[str], host_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = dict(self.cfg)
+
+        def apply_host_voice(host: Dict[str, Any]) -> None:
+            for key in ["piper_voice", "piper_model", "piper_extra_args", "sapi_voice_contains", "sapi_rate", "sapi_volume", "silero_speaker", "silero_model", "silero_language", "silero_sample_rate", "silero_device", "silero_put_accent", "silero_put_yo", "qwen3_tts_mode", "qwen3_tts_instruct", "qwen3_tts_instruct_variants", "qwen3_tts_speaker", "qwen3_tts_language", "f5_tts_ref_audio", "f5_tts_ref_text", "omnivoice_ref_audio", "omnivoice_ref_text", "omnivoice_instruct", "omnivoice_mode", "omnivoice_device", "omnivoice_steps", "omnivoice_speed"]:
+                if key in host and host[key] not in [None, ""]:
+                    cfg[key] = host[key]
+
         if host_name:
             for host in self.cfg.get("hosts") or []:
                 if isinstance(host, dict) and str(host.get("name", "")).lower() == str(host_name).lower():
-                    for key in ["piper_voice", "piper_model", "piper_extra_args", "sapi_voice_contains", "sapi_rate", "sapi_volume", "silero_speaker", "silero_model", "silero_language", "silero_sample_rate", "silero_device", "silero_put_accent", "silero_put_yo", "qwen3_tts_mode", "qwen3_tts_instruct", "qwen3_tts_instruct_variants", "qwen3_tts_speaker", "qwen3_tts_language", "f5_tts_ref_audio", "f5_tts_ref_text", "omnivoice_ref_audio", "omnivoice_ref_text", "omnivoice_instruct", "omnivoice_mode", "omnivoice_device", "omnivoice_steps", "omnivoice_speed"]:
-                        if key in host and host[key] not in [None, ""]:
-                            cfg[key] = host[key]
+                    apply_host_voice(host)
                     break
+        if isinstance(host_override, dict):
+            apply_host_voice(host_override)
         variants = cfg.get("qwen3_tts_instruct_variants")
         if cfg.get("qwen3_tts_instruct_variants_enabled", True) and isinstance(variants, list):
             clean = [str(v).strip() for v in variants if str(v).strip()]
@@ -555,9 +561,15 @@ class TTS:
                 log("TTS: предупреждение — парсер мог потерять часть слов; отдаю весь текст одному голосу, чтобы ничего не пропало")
                 fallback_host = segments[0][0] if segments else None
                 segments = [(fallback_host, trim_to_complete_sentence(src_plain or text))]
+        host_cfg_by_name = {
+            str(hst.get("name", "")).strip().lower(): hst
+            for hst in hosts
+            if isinstance(hst, dict) and str(hst.get("name", "")).strip()
+        }
         if len(segments) <= 1:
             host, spoken = segments[0] if segments else (None, text)
-            return self.get_or_create_mp3(spoken, host)
+            host_cfg = host_cfg_by_name.get(str(host or "").strip().lower())
+            return self.get_or_create_mp3(spoken, host, host_cfg)
         voice_sig = json.dumps([{
             "name": hst.get("name", ""),
             "voice_ver": hst.get("host_voice_profile_version", ""),
@@ -582,7 +594,8 @@ class TTS:
             spoken = trim_to_complete_sentence(spoken)
             if self.cfg.get("tts_debug_log", True):
                 log(f"TTS: озвучиваю реплику {idx+1}/{len(segments)} голосом {host or 'по умолчанию'}: {' '.join(spoken.split())[:180]}")
-            part = self.get_or_create_mp3(spoken, host)
+            host_cfg = host_cfg_by_name.get(str(host or "").strip().lower())
+            part = self.get_or_create_mp3(spoken, host, host_cfg)
             if part and part.exists():
                 part_files.append(part)
             else:
@@ -615,7 +628,7 @@ class TTS:
             return files[0]
         return out_mp3 if out_mp3.exists() and out_mp3.stat().st_size > 1024 else files[0]
 
-    def get_or_create_mp3(self, text: str, host_name: Optional[str] = None) -> Optional[Path]:
+    def get_or_create_mp3(self, text: str, host_name: Optional[str] = None, host_cfg: Optional[Dict[str, Any]] = None) -> Optional[Path]:
         primary_backend = str(self.cfg.get("tts_backend", "sapi")).lower().strip()
         if primary_backend == "none":
             return None
@@ -628,7 +641,7 @@ class TTS:
 
         last_error = ""
         for backend in backends:
-            voice_cfg = self._voice_cfg_for_host(host_name)
+            voice_cfg = self._voice_cfg_for_host(host_name, host_cfg)
             h = self.text_hash(text + "|" + backend + "|" + host_name_or_empty(host_name) + "|" + str(voice_cfg.get("piper_voice", "")) + "|" + str(voice_cfg.get("silero_speaker", "")) + "|" + str(voice_cfg.get("qwen3_tts_model_id", "")) + "|" + str(voice_cfg.get("qwen3_tts_instruct", "")) + "|" + str(voice_cfg.get("qwen3_tts_speaker", "")) + "|" + str(voice_cfg.get("sapi_voice_contains", "")) + "|" + str(voice_cfg.get("lmstudio_tts_model", self.cfg.get("lmstudio_tts_model", ""))) + "|" + str(voice_cfg.get("lmstudio_tts_voice", self.cfg.get("lmstudio_tts_voice", ""))) + "|" + str(voice_cfg.get("lmstudio_tts_response_format", self.cfg.get("lmstudio_tts_response_format", ""))) + "|" + str(voice_cfg.get("omnivoice_ref_audio", "")) + "|" + str(voice_cfg.get("omnivoice_ref_text", "")) + "|" + str(voice_cfg.get("omnivoice_instruct", "")) + "|" + str(voice_cfg.get("omnivoice_steps", "")) + "|" + str(voice_cfg.get("omnivoice_speed", "")) + "|" + str(voice_cfg.get("omnivoice_pronunciation_file", "")))
             out_mp3 = self.cache_dir / f"host_{h}.mp3"
             if out_mp3.exists() and out_mp3.stat().st_size > 1024:
