@@ -1,0 +1,10 @@
+Optional Piper voice files can live here.
+
+Recommended Russian voice for the MVP:
+  ru_RU-ruslan-medium.onnx
+  ru_RU-ruslan-medium.onnx.json
+
+Easiest setup:
+  run install_piper_windows.bat
+
+This installs piper-tts only into the local .venv and patches config.json to use Piper.

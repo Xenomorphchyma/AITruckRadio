@@ -1,0 +1,65 @@
+# Local Python environments
+.venv/
+.venv_omnivoice/
+.venv_qwen3_tts/
+.venv_f5_tts/
+
+# Python cache/build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# AI/model/runtime caches
+.hf_cache/
+.torch_cache/
+.pip_cache/
+silero-models/
+
+# Runtime/generated radio output
+cache/*
+!cache/.gitkeep
+cache/tmp/
+cache/spoken/
+cache/show_plans/
+cache/test_*
+*.broken.json
+
+# Local user config
+config.json
+
+# User media and large local assets
+music/*
+!music/README_MUSIC_RU.md
+!music/put_music_here.txt
+beds/*
+!beds/put_radio_beds_here.txt
+jingles/*
+!jingles/README_JINGLES_RU.md
+station_ids/*
+!station_ids/README_RU.txt
+!station_ids/README_STATION_IDS_RU.md
+
+# Voice/reference assets are local and may be large/private
+references/*
+!references/README_REFERENCE_RU.md
+!references/README_REFERENCE_RU.txt
+!references/put_reference_voices_here.txt
+voices/*
+!voices/put_piper_voice_here.txt
+
+# Local release archives
+releases/*.zip
+*.zip
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
