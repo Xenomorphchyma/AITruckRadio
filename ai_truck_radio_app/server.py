@@ -21,7 +21,12 @@ def bool_from_form(value: Optional[str]) -> bool:
     return str(value or "").lower() in {"1", "true", "on", "yes", "да"}
 
 
+def make_stream_url(cfg: Dict[str, Any]) -> str:
+    return f"http://{cfg['host']}:{int(cfg['port'])}/stream.mp3"
+
+
 def make_ets2_line(cfg: Dict[str, Any]) -> str:
+    """Backward-compatible stream descriptor used by old integrations."""
     url = f"http://{cfg['host']}:{int(cfg['port'])}/stream.mp3"
     station = str(cfg.get("station_name", "AI Truck Radio"))
     genre = str(cfg.get("station_genre", "AI"))

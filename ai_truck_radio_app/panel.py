@@ -119,11 +119,11 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
     ])
 
     live_settings = "".join([
-        select_box("station_style", "Стиль станции", list(styles), "Меняет общий тон ведущих: уютное радио, киберпанк, дальнобой FM и т.п."),
+        select_box("station_style", "Стиль станции", list(styles), "Меняет общий тон ведущих: душевное радио, уютное радио, киберпанк и т.п."),
         input_num("dj_every_n_tracks_min", "Live: минимум песен между речью", "Минимальный интервал между вставками ведущих в live-режиме.", "1", "20"),
         input_num("dj_every_n_tracks_max", "Live: максимум песен между речью", "Максимальный интервал между вставками ведущих в live-режиме.", "1", "30"),
         select_box("dj_talk_profile", "Длина live-блоков", ["short", "medium", "long", "mixed"], "mixed позволяет радио иногда делать короткие, иногда длинные блоки."),
-        select_box("dj_topic_mode", "Тема live-блоков", ["auto", "music", "news", "weather", "road_story"], "auto сам смешивает музыку, новости, погоду и дорожные истории."),
+        select_box("dj_topic_mode", "Тема live-блоков", ["auto", "music", "news", "weather", "listener_story"], "auto сам смешивает музыку, новости, погоду и живые зарисовки слушателей."),
         checkbox("intro_before_first_track", "Первое вступление перед первой песней", "Ведущие сначала открывают эфир, обсуждают время/погоду/настроение, потом включают трек."),
         checkbox("startup_intro_blocking", "Ждать первое вступление до музыки", "Если включено — радио не начнёт первую песню, пока стартовая речь не готова."),
         input_num("startup_intro_time_lead_sec", "Старт: время с запасом, сек", "В стартовой речи передаётся время немного вперёд, чтобы ведущие не называли время начала генерации.", "0", "300", "5"),
@@ -260,7 +260,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
     system_settings = "".join([
         input_text("music_dir", "Папка музыки", "Где лежат mp3/flac/ogg треки."),
         input_text("ffmpeg_path", "FFmpeg path", "Путь к ffmpeg.exe или просто ffmpeg, если он в PATH."),
-        input_num("bitrate_kbps", "Битрейт стрима", "Для ETS2 обычно хватает 128–192.", "64", "320", "16"),
+        input_num("bitrate_kbps", "Битрейт стрима", "Для локального MP3-стрима обычно хватает 128–192.", "64", "320", "16"),
         checkbox("radio_autostart", "Автозапуск радио при запуске run_radio.bat", "Ты просил запуск из панели, поэтому по умолчанию выключено."),
         checkbox("clean_generated_on_start", "Чистить генерации при запуске радио", "Удаляет cache/spoken, cache/tmp, cache/show_plans, но не трогает музыку/референсы/профили."),
         checkbox("clean_generated_on_restart", "Чистить генерации при перезапуске", "То же самое для кнопки 'Перезапустить и очистить'."),

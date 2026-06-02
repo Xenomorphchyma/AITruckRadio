@@ -5,7 +5,7 @@ AI Truck Radio
 
 Главное:
 - Эфир идёт в фоне, даже если слушателей нет.
-- Игра/браузер подключаются к уже текущему эфиру, а не запускают плейлист заново.
+- Браузер или внешний плеер подключаются к уже текущему эфиру, а не запускают плейлист заново.
 - Веб-панель сама не стартует поток, пока пользователь не нажал кнопку включения радио.
 - Есть плавные fade-in/fade-out через FFmpeg.
 - Есть ведущие, новости из файла, время/дата, погода через Open-Meteo/wttr fallback, плановый и live-эфир.
@@ -29,7 +29,7 @@ from http.server import ThreadingHTTPServer
 from typing import Any, Dict
 
 from ai_truck_radio_app.engine import RadioEngine
-from ai_truck_radio_app.server import make_ets2_line, make_handler
+from ai_truck_radio_app.server import make_handler, make_stream_url
 from ai_truck_radio_app.config import (
     APP_NAME,
     APP_VERSION,
@@ -58,8 +58,8 @@ def print_startup_help(cfg: Dict[str, Any], engine: RadioEngine) -> None:
             log(f"Используемая модель: {engine.lm.pick_model()}")
         else:
             log("LM Studio пока не виден на /v1/models. Включи Local Server в LM Studio или будет fallback.")
-    log("Строка для ETS2 live_streams.sii:")
-    print(make_ets2_line(cfg), flush=True)
+    log("Адрес локального MP3-стрима:")
+    print(make_stream_url(cfg), flush=True)
     log(f"Веб-панель: http://{cfg['host']}:{int(cfg['port'])}/")
     log(f"Стрим:     http://{cfg['host']}:{int(cfg['port'])}/stream.mp3")
     log("Next hotkey: Ctrl+Alt+N (если включено и Windows разрешила зарегистрировать хоткей)")
@@ -102,16 +102,16 @@ def ensure_data_files() -> None:
     if not news.exists():
         news.write_text(
             "# Каждая непустая строка — отдельная новость/заметка для эфира. Можно писать своё.\n"
-            "На стоянке у виртуальной трассы сегодня обещают крепкий кофе и свободные места для тех, кто доехал без штрафов.\n"
-            "Станция учится не просто включать музыку, а вести эфир как настоящее дорожное радио.\n",
+            "Сегодня станция учится не просто включать музыку, а вести эфир как настоящее душевное радио.\n"
+            "В плейлисте появляются новые треки, а ведущие ищут для них тёплые и живые подводки.\n",
             encoding="utf-8",
         )
     greetings = data_dir / "greetings.txt"
     if not greetings.exists():
         greetings.write_text(
             "# Каждая непустая строка — отдельный привет/пожелание для эфира.\n"
-            "Привет всем, кто идёт ночным рейсом и не забывает смотреть в зеркала перед перестроением.\n"
-            "Передайте привет Андрею: ровной трассы, спокойных развязок и без штрафов на маршруте.\n",
+            "Привет всем, кто слушает нас вечером дома, в браузере или просто на фоне своих дел.\n"
+            "Передайте привет Андрею: хорошего настроения, спокойного вечера и побольше любимой музыки.\n",
             encoding="utf-8",
         )
 
@@ -119,7 +119,8 @@ def ensure_data_files() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Truck Radio")
     parser.add_argument("--no-pregen", action="store_true", help="не создавать вставки ведущего на старте")
-    parser.add_argument("--print-ets2-line", action="store_true", help="только вывести строку для live_streams.sii")
+    parser.add_argument("--print-stream-url", action="store_true", help="только вывести адрес локального MP3-стрима")
+    parser.add_argument("--print-ets2-line", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     cfg = load_config()
@@ -127,8 +128,8 @@ def main() -> int:
     rel_path(cfg, "cache_dir").mkdir(parents=True, exist_ok=True)
     ensure_data_files()
 
-    if args.print_ets2_line:
-        print(make_ets2_line(cfg))
+    if args.print_stream_url or args.print_ets2_line:
+        print(make_stream_url(cfg))
         return 0
 
     engine = RadioEngine(cfg)

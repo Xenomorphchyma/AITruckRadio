@@ -472,16 +472,18 @@ class RadioEngine:
 
         topic_mode = str(self.cfg.get("dj_topic_mode", "auto") or "auto").strip().lower()
         candidates = []
-        if topic_mode in {"news", "weather", "music", "road_story"}:
+        if topic_mode == "road_story":
+            topic_mode = "listener_story"
+        if topic_mode in {"news", "weather", "music", "listener_story"}:
             candidates = [topic_mode]
         else:
-            candidates = ["music", "next_track", "previous_track", "road_story"]
+            candidates = ["music", "next_track", "previous_track", "listener_story"]
             if has_news:
                 candidates += ["news", "news"]
             if has_weather:
                 candidates += ["weather", "weather"]
             if is_night_now(self.cfg):
-                candidates += ["night_road"]
+                candidates += ["night_mood"]
         topic = random.choice(candidates) if candidates else "music"
 
         if length == "short":
@@ -496,8 +498,8 @@ class RadioEngine:
             "previous_track": "короткое послевкусие предыдущего трека",
             "news": "новость станции",
             "weather": "погода: город, температура и настроение дня",
-            "road_story": "короткая живая зарисовка из эфира: город, слушатель, погода или настроение",
-            "night_road": "ночной эфир: спокойная музыка, городские огни, настроение позднего часа",
+            "listener_story": "короткая живая зарисовка из эфира: город, слушатель, погода или настроение",
+            "night_mood": "ночной эфир: спокойная музыка, городские огни, настроение позднего часа",
         }
         return {"length": length, "topic": topic, "topic_label": topic_labels.get(topic, topic), "instruction": instruction}
 
@@ -890,6 +892,7 @@ class RadioEngine:
             and random.random() < clamp(float(self.cfg.get("omnivoice_nonverbal_tags_chance", 0.25) or 0.25), 0.0, 1.0)
         )
         ctx = {
+            "station_name": str(self.cfg.get("station_name") or "Волна FM"),
             "style": style,
             "style_prompt": style_prompt(style, night),
             "is_night": night,
@@ -1085,7 +1088,7 @@ class RadioEngine:
 
         # Живой эфир не должен замирать из-за LLM/TTS. Если заранее подготовленная
         # вставка ещё не готова, лучше продолжить музыку и дождаться следующей
-        # подходящей вставки, чем держать ETS2/браузер в тишине.
+        # подходящей вставки, чем держать локальный стрим в тишине.
         if self.cfg.get("never_block_for_dj", True):
             with self.prepare_lock:
                 alive = bool(self.prepare_thread and self.prepare_thread.is_alive())
@@ -1426,7 +1429,7 @@ class RadioEngine:
     def _stream_path_plain_to_broadcast(self, path: Path, kind: str, limit_sec: Optional[float] = None) -> bool:
         ffmpeg = str(self.cfg.get("ffmpeg_path", "ffmpeg"))
         if not executable_exists(ffmpeg):
-            msg = "FFmpeg не найден. Для ETS2-стрима нужен ffmpeg.exe."
+            msg = "FFmpeg не найден. Для локального MP3-стрима нужен ffmpeg.exe."
             self.set_error(msg)
             log(msg)
             self._broadcast_silence(3)
@@ -1688,7 +1691,7 @@ class RadioEngine:
     def _planned_dj_instruction(self, length: str) -> Tuple[str, str]:
         length = (length or "medium").lower()
         if length == "intro_long":
-            return "long", "Длинное первое вступление: 8-12 предложений или 6-8 реплик. Обсуди текущее время, погоду если она есть, настроение ведущих перед рейсом, формат станции, пожелай приятной поездки, аккуратно назови первый трек и только потом подведи к музыке. Это единственное полноценное открытие эфира."
+            return "long", "Длинное первое вступление: 8-12 предложений или 6-8 реплик. Обсуди текущее время, погоду если она есть, настроение ведущих, формат станции и атмосферу дня, аккуратно назови первый трек и только потом подведи к музыке. Это единственное полноценное открытие эфира."
         if length == "long":
             return "long", "Длинный подготовленный эфирный блок: 6-10 предложений, живой мини-разговор с завязкой, коротким наблюдением и мягкой подводкой к музыке."
         if length == "short":
@@ -1805,7 +1808,7 @@ class RadioEngine:
             since_speech += 1
             next_tr = selected[i + 1][0] if i + 1 < len(selected) else None
             if next_tr and since_speech >= gap:
-                add_speech(tr, next_tr, False, "живой блок между песнями: музыка, дорога, время, новости или привет слушателя", planned_elapsed)
+                add_speech(tr, next_tr, False, "живой блок между песнями: музыка, время, новости, погода, настроение или привет слушателя", planned_elapsed)
                 since_speech = 0
                 gap = random.randint(min_gap, max_gap)
 
@@ -2258,7 +2261,7 @@ class RadioEngine:
             "ffprobe_ok": executable_exists(find_ffprobe(self.cfg)),
             "stream_url": f"http://{self.cfg['host']}:{int(self.cfg['port'])}/stream.mp3",
             "ets2_line": make_ets2_line(self.cfg),
-            "station_style": str(self.cfg.get("station_style", "дальнобой FM")),
+            "station_style": str(self.cfg.get("station_style", "душевное радио")),
             "weather_city": str(self.cfg.get("weather_city", "")),
             "weather_enabled": bool(self.cfg.get("weather_enabled", False)),
             "news_enabled": bool(self.cfg.get("news_enabled", True)),

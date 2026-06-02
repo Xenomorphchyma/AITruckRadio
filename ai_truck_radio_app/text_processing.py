@@ -122,13 +122,20 @@ def strip_omnivoice_nonverbal_tags(text: str) -> str:
 
 
 def sanitize_general_radio_text(text: str) -> str:
-    """General cleanup for truck-simulator roleplay phrases.
+    """General cleanup for game/truck-simulator roleplay phrases.
 
     It is deliberately generic: no artist/song-specific substitutions, only
     removal/rewording of the unwanted broadcast framing.
     """
     if not text:
         return text
+    banned_sentence = re.compile(
+        r"(?i)(?:^|(?<=[.!?…])\s+)[^.!?…\n]{0,220}"
+        r"(?:\bVR\b|виртуальн|Euro\s+Truck|Simulator|симулятор|кабин|грузовик|дальнобо|рейс|"
+        r"за\s+рул[её]м|трасс|фары|зеркал[ао]|штраф[а-яё]*|перестроен[а-яё]*)"
+        r"[^.!?…\n]*[.!?…]?"
+    )
+    text = banned_sentence.sub(" ", text)
     replacements = [
         (r"(?i)\bдальнобойщикам\b", "слушателям"),
         (r"(?i)\bдальнобоям\b", "слушателям"),
@@ -136,9 +143,14 @@ def sanitize_general_radio_text(text: str) -> str:
         (r"(?i)\bдальнобойщик\s+Андрей\b", "слушатель Андрей"),
         (r"(?i)\bводитель\s+Андрей\b", "слушатель Андрей"),
         (r"(?i)\bза\s+рул[её]м\b", "у приёмника"),
+        (r"(?i)\bв\s+VR\b", "в эфире"),
+        (r"(?i)\bVR\b", "эфир"),
+        (r"(?i)\bвиртуальн(?:ая|ой|ую|ые|ых|ом|ым)?\s+трасс[а-яё]*\b", "музыкальный эфир"),
+        (r"(?i)\bсимулятор[а-яё]*\b", "эфир"),
         (r"(?i)\bв\s+кабине\s+(?:своего\s+)?грузовика\b", "у себя"),
         (r"(?i)\bиз\s+кабины\s+грузовика\b", "из студии"),
         (r"(?i)\bкабина\s+грузовика\b", "вечерняя атмосфера"),
+        (r"(?i)\bкабин[аеуы]?\b", "эфир"),
         (r"(?i)\bсалон\s+грузовика\b", "домашний плейлист"),
         (r"(?i)\bгрузовик[ае]?\b", "эфир"),
         (r"(?i)\bрейс[а-яё]*\b", "эфир"),
@@ -275,8 +287,6 @@ def normalize_generated_radio_text(text: str) -> str:
         ('проверка голоса', 'проверка го́лоса'),
         ('голосА', 'голоса́'),
         ('гОлоса', 'го́лоса'),
-        ('Дальнобой FM', 'Дальнобойщик ЭФЭМ'),
-        ('дальнобой FM', 'Дальнобойщик ЭФЭМ'),
         ('FM', 'ЭФЭМ'),
     ]
     for src, dst in replacements:
@@ -347,7 +357,6 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
             ("проверяем голоса", "проверяем голоса́"),
             ("радиоэфир", "радиоэфи́р"),
             ("эфир", "эфи́р"),
-            ("дорога зовет", "доро́га зовёт"),
             ("музыка", "му́зыка"),
             ("все слушатели", "все́ слушатели"),
             ("всем слушателям", "все́м слушателям"),
@@ -416,9 +425,9 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
         ]
         if any(re.search(p, low, flags=re.IGNORECASE) for p in startup_bad):
             out.append("это старт эфира, предыдущих треков ещё не было")
-    roleplay_bad = ["кабина грузовика", "салон грузовика", "грузовик", "дальнобойщика", "дальнобоя", "рейс", "за рулем", "за рулём"]
+    roleplay_bad = ["кабина грузовика", "салон грузовика", "грузовик", "дальнобойщика", "дальнобоя", "рейс", "за рулем", "за рулём", "vr", "симулятор"]
     if any(x in low for x in roleplay_bad):
-        out.append("это обычное музыкальное радио, не трансляция из грузовика/рейса")
+        out.append("это обычное музыкальное радио, без игровых и автомобильных ролевых образов")
     if re.search(r"\([^\n]{0,160}(включается|включаем|следующий трек|подводит)[^\n]{0,160}\)|\*[^\n]{0,160}(включается|подводит|следующий трек)[^\n]{0,160}\*", str(text or ""), flags=re.IGNORECASE):
         out.append("нельзя писать сценические ремарки вроде 'включается трек'")
     return out

@@ -9,7 +9,7 @@
 - Limit response: ON.
 - Max response length: 800–1200 tokens.
 - Max Concurrent Predictions: 1.
-- CPU threads: 2–4, если параллельно играешь в VR.
+- CPU threads: 2–4, если параллельно запущены тяжёлые приложения.
 
 Для планового режима на 15–120 минут:
 
