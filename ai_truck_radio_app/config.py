@@ -75,7 +75,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "omnivoice_pronunciation_file": "prompts/pronunciation_ru.tsv",
     "omnivoice_normalize_ru": True,
     "omnivoice_nonverbal_tags_enabled": True,
-    "omnivoice_nonverbal_tags_chance": 0.25,
+    "omnivoice_nonverbal_tags_chance": 0.35,
     "omnivoice_ref_audio": "references/maxim_ref.wav",
     "omnivoice_ref_text": "",
     "omnivoice_instruct": "male, middle-aged, russian accent, low pitch",

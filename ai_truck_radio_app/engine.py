@@ -36,6 +36,7 @@ from ai_truck_radio_app.context import (
     current_time_text,
     current_time_text_at_offset,
     current_time_spoken_text_at_offset,
+    daypart_name_for_hour,
     exact_hour_announcement_text,
     is_night_now,
     read_greeting_line,
@@ -850,6 +851,14 @@ class RadioEngine:
                 hour_key = time.localtime(time.time() + time_offset_sec).tm_hour
                 if self.last_hour_announcement_hour == hour_key and not intro_allowed:
                     exact_time_text = ""
+        speech_time = time.localtime(time.time() + time_offset_sec)
+        computer_hour = int(speech_time.tm_hour)
+        computer_minute = int(speech_time.tm_min)
+        all_host_names = [
+            str(h.get("name", "")).strip()
+            for h in (self.cfg.get("hosts") or [])
+            if isinstance(h, dict) and str(h.get("name", "")).strip()
+        ]
         weather_text = ""
         if self.cfg.get("weather_enabled", False):
             if intro_allowed or random.random() < float(self.cfg.get("weather_context_chance", 0.25)):
@@ -889,8 +898,9 @@ class RadioEngine:
             "tracks_played": self.tracks_played,
             "time_text": time_text,
             "spoken_time_text": spoken_time_text if time_text else "",
-            "computer_hour": time.localtime(time.time() + time_offset_sec).tm_hour,
-            "computer_minute": time.localtime(time.time() + time_offset_sec).tm_min,
+            "computer_hour": computer_hour,
+            "computer_minute": computer_minute,
+            "daypart_text": daypart_name_for_hour(computer_hour),
             "time_offset_sec": time_offset_sec,
             "expected_speech_time_text": time_text,
             "host_strict_clock_guard": bool(self.cfg.get("host_strict_clock_guard", True)),
@@ -900,6 +910,7 @@ class RadioEngine:
             "greeting_text": greeting_text,
             "two_hosts": bool(two_hosts and len(selected_hosts or []) >= 2),
             "hosts": selected_hosts or [],
+            "all_host_names": all_host_names,
             "recent_host_texts": list(self.recent_host_texts),
             "host_mode": str(self.cfg.get("host_mode", "mostly_solo")),
             "dj_plan": dj_plan,
@@ -1989,6 +2000,7 @@ class RadioEngine:
                     takeover = max(0.0, float(self.cfg.get("speech_takeover_sec", 1.15) or 1.15))
                     if item.duration_sec > takeover + 45:
                         limit_sec = max(1.0, item.duration_sec - takeover)
+                        log(f"Плановый segue: перехватываю хвост трека на {takeover:.1f} сек., чтобы ведущие вошли без тишины")
                 self._stream_path_plain_to_broadcast(item.path, "music", limit_sec=limit_sec)
                 with self.state_lock:
                     self.tracks_played += 1

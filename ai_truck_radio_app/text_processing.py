@@ -309,6 +309,25 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
             continue
         lines.append(line)
     text = " ".join(lines).strip()
+    host_names = [
+        str(h.get("name", "")).strip()
+        for h in (ctx.get("hosts") or [])
+        if isinstance(h, dict) and str(h.get("name", "")).strip()
+    ]
+    all_host_names = [
+        str(x).strip()
+        for x in (ctx.get("all_host_names") or [])
+        if str(x).strip()
+    ]
+    if host_names:
+        allowed = list(dict.fromkeys(host_names))
+        forbidden = [x for x in dict.fromkeys(all_host_names) if x not in allowed]
+        for name in allowed:
+            name_re = re.escape(name)
+            text = re.sub(rf"({name_re}\s*[:：])\s*\1+", rf"\1 ", text)
+            for bad_name in forbidden:
+                bad_re = re.escape(bad_name)
+                text = re.sub(rf"({name_re}\s*[:：])\s*(?:{bad_re}\s*[:：]\s*)+", rf"\1 ", text)
     prev = str(ctx.get("previous_track_name") or ctx.get("planned_previous_track") or "").lower()
     if not prev or "ничего" in prev or "ещё" in prev or "еще" in prev:
         text = re.sub(r"\b[Вв]\s+предыдущих\s+песнях[^.!?]*[.!?]", "", text)

@@ -60,7 +60,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         return f'<label class="setting">{label_for(key,label,tip)}<select name="{esc(key)}">{opts}</select></label>'
 
     checkbox_keys = [
-        "weather_enabled", "news_enabled", "two_hosts_enabled", "tts_speak_host_names", "fade_enabled", "speech_bed_enabled", "speech_takeover_enabled",
+        "weather_enabled", "news_enabled", "two_hosts_enabled", "tts_speak_host_names", "fade_enabled", "speech_bed_enabled", "speech_takeover_enabled", "speech_takeover_only_if_prepared",
         "track_profiles_enabled", "track_profiles_web_lookup_enabled", "track_profiles_force_rebuild_existing", "track_profiles_wikipedia_enabled", "track_profiles_wikidata_enabled", "track_profiles_deezer_enabled", "track_profiles_itunes_enabled", "track_profiles_enrich_missing_web_only", "track_profiles_enrich_only_if_no_sources", "night_mode_enabled", "hotkey_enabled", "lm_enabled", "lm_append_no_think",
         "intro_before_first_track", "startup_intro_blocking", "async_prepare_dj", "show_experimental_tts_backends", "omnivoice_persistent_worker", "omnivoice_prewarm_on_radio_start", "omnivoice_normalize_ru", "omnivoice_nonverbal_tags_enabled",
         "speech_radio_processing_enabled", "speech_compressor_enabled", "speech_presence_eq_enabled", "speech_loudnorm_enabled", "speech_limiter_enabled", "jingle_enabled", "auto_generate_sweep_jingle",
@@ -222,6 +222,13 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         input_num("speech_loudnorm_i", "Целевая громкость речи LUFS", "Чем ближе к -10, тем громче. Безопасно: -13...-12.", "-22", "-10", "0.5"),
         input_num("speech_bed_volume", "Громкость подложки", "Радио-bed под речью. Обычно 0.04–0.10.", "0", "0.5", "0.01"),
         select_box("speech_bed_mode", "Подложка под речь", ["generated", "file", "auto", "off"], "generated — мягкий шум/bed; file — свои файлы из beds; off — без фона."),
+        checkbox("fade_enabled", "Плавные входы и выходы", "Включает fade-in/fade-out для музыки и речи."),
+        input_num("music_fade_out_sec", "Fade-out музыки, сек", "Когда ведущий входит на хвосте, затухание считается от укороченного конца песни.", "0", "8", "0.05"),
+        input_num("transition_silence_sec", "Пауза между элементами, сек", "0 = без искусственной тишины между песней и ведущим.", "0", "5", "0.05"),
+        checkbox("speech_takeover_enabled", "Ведущий входит на хвосте трека", "Если после песни должен говорить ведущий, радио забирает последние секунды трека и делает fade-out без неловкой паузы."),
+        input_num("speech_takeover_sec", "Сколько хвоста забрать, сек", "Обычно 3–5 секунд: песня мягко заканчивается, и ведущий начинает сразу.", "0", "12", "0.25"),
+        input_num("speech_takeover_min_track_sec", "Минимальная длина трека для перехвата", "Короткие треки не укорачиваются.", "10", "180", "1"),
+        checkbox("speech_takeover_only_if_prepared", "Перехватывать хвост только если речь готова", "В Live не укорачивает песню, пока следующий блок ведущих ещё не подготовлен."),
         checkbox("speech_radio_processing_enabled", "Радио-обработка речи", "Compressor + EQ + loudnorm + limiter."),
         checkbox("speech_compressor_enabled", "Compressor", "Сжимает динамику, чтобы голос был плотнее как в эфире."),
         checkbox("speech_presence_eq_enabled", "EQ / presence boost", "Поднимает разборчивость голоса в районе presence."),
@@ -291,15 +298,17 @@ main {{ min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
 .controls .side-check {{ grid-column:1/-1; grid-row:4; }}
 .controls #clearGenBtn {{ grid-column:2; grid-row:3; }}
 .side-check {{ display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid rgba(255,255,255,.06); border-radius:8px; background:rgba(0,0,0,.16); font-size:12px; }} .side-check input {{ width:auto; flex:0 0 auto; }}
-.player-card {{ position:fixed; left:50%; bottom:14px; z-index:30; transform:translateX(-50%); width:min(720px,calc(100vw - 32px)); display:grid; grid-template-columns:auto minmax(220px,1fr) auto auto auto; gap:8px; align-items:center; padding:9px; background:rgba(15,23,42,.96); backdrop-filter:blur(14px); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); }}
-.player-card.is-collapsed {{ width:auto; grid-template-columns:auto auto; }}
-.player-card.is-collapsed audio,.player-card.is-collapsed .player-buttons,.player-card.is-collapsed #resetLivePlayerBtn,.player-card.is-collapsed .toast {{ display:none; }}
-.player-card .mini {{ color:var(--muted); font-size:11px; white-space:nowrap; }}
-.player-card button {{ min-height:34px; padding:7px 10px; font-size:12px; line-height:1.08; }}
-.player-buttons {{ display:contents; }} audio {{ width:100%; max-width:100%; height:32px; display:block; }}
-#playBtn {{ background:#3a4254; color:#d8e2f5; border:1px solid #586176; }}
+.player-card {{ position:fixed; left:50%; bottom:14px; z-index:30; transform:translateX(-50%); width:min(860px,calc(100vw - 32px)); display:grid; grid-template-columns:auto minmax(320px,1fr) auto auto auto; gap:10px; align-items:center; padding:10px 12px; background:rgba(11,18,32,.97); backdrop-filter:blur(16px); border:1px solid rgba(124,199,255,.22); border-radius:12px; box-shadow:0 18px 48px rgba(0,0,0,.45); }}
+.player-card.is-collapsed {{ width:auto; grid-template-columns:auto auto auto; }}
+.player-card.is-collapsed audio,.player-card.is-collapsed #stopBtn,.player-card.is-collapsed .toast {{ display:none; }}
+.player-brand {{ display:flex; align-items:center; gap:9px; min-width:128px; font-weight:800; color:#eaf2ff; white-space:nowrap; }}
+.player-dot {{ width:9px; height:9px; border-radius:50%; background:#687388; box-shadow:0 0 0 4px rgba(104,115,136,.14); }}
+.player-card.is-live .player-dot {{ background:#f05252; box-shadow:0 0 0 4px rgba(240,82,82,.16),0 0 18px rgba(240,82,82,.45); }}
+.player-card button {{ min-height:36px; padding:8px 12px; font-size:12px; line-height:1.08; }}
+.player-card audio {{ width:100%; max-width:100%; height:34px; display:block; }}
+#playBtn {{ min-width:86px; background:#3a4254; color:#d8e2f5; border:1px solid #586176; }}
 #playBtn.is-live {{ background:#d84545; color:#fff; border-color:#ff7b7b; }}
-#playerCollapseBtn {{ width:34px; padding:7px 0; }}
+#playerCollapseBtn {{ width:36px; padding:8px 0; border-radius:999px; }}
 .nav-card {{ display:grid; gap:8px; }}
 .tabs {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; overflow:visible; flex:0 0 auto; }}
 .tab {{ display:flex; align-items:center; justify-content:flex-start; min-height:32px; padding:7px 8px; background:#101827; color:var(--text); border:1px solid var(--line); white-space:normal; text-align:left; line-height:1.1; font-size:12px; }}
@@ -389,11 +398,11 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
   </main>
 </div>
 <div class="player-card" id="playerDock">
-  <div class="mini">Плеер</div>
+  <div class="player-brand"><span class="player-dot" aria-hidden="true"></span><span>Эфир</span></div>
   <audio id="player" controls></audio>
-  <div class="player-buttons"><button id="playBtn" type="button">Эфир</button><button id="stopBtn" type="button" class="ghost">Сбросить</button></div>
-  <button id="resetLivePlayerBtn" type="button" class="ghost">Live-поток</button>
-  <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">▾</button>
+  <button id="playBtn" type="button">Эфир</button>
+  <button id="stopBtn" type="button" class="ghost">Сбросить</button>
+  <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">⌄</button>
   <div class="toast" id="toast"></div>
 </div>
 <script>
@@ -461,6 +470,8 @@ refreshDependencyStates();
 document.querySelectorAll('.reset-key').forEach(btn => btn.onclick = async (e) => {{ e.preventDefault(); e.stopPropagation(); const key = btn.dataset.key; try {{ const j = await post('/api/config/reset_key', {{key}}); applyValue(key, j.value); refreshResetButtons(); await refresh(); say('Параметр сброшен: ' + key); }} catch(err) {{ say('Ошибка сброса: ' + err.message); }} }});
 function refreshPlayerState() {{
   const live = !!player && !player.paused && !player.ended && !!player.currentSrc;
+  const dock = byId('playerDock');
+  if (dock) dock.classList.toggle('is-live', live);
   const btn = byId('playBtn');
   if (btn) {{
     btn.classList.toggle('is-live', live);
@@ -476,7 +487,7 @@ if (byId('stopBtn')) byId('stopBtn').onclick = () => {{ player.pause(); player.r
 if (byId('playerCollapseBtn')) byId('playerCollapseBtn').onclick = () => {{
   const dock = byId('playerDock'); if (!dock) return;
   dock.classList.toggle('is-collapsed');
-  byId('playerCollapseBtn').textContent = dock.classList.contains('is-collapsed') ? '▴' : '▾';
+  byId('playerCollapseBtn').textContent = dock.classList.contains('is-collapsed') ? '⌃' : '⌄';
 }};
 if (byId('radioStartBtn')) byId('radioStartBtn').onclick = async () => {{ say('Запускаю радио...'); await post('/api/radio/start', {{clean: cleanFlag()}}); await refresh(); say('Радио включено'); }};
 if (byId('radioStopBtn')) byId('radioStopBtn').onclick = async () => {{ say('Останавливаю радио...'); await post('/api/radio/stop'); player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); await refresh(); say('Радио выключено'); }};
@@ -519,12 +530,6 @@ async function refresh() {{
   const planBtn = byId('modePlanBtn'); const liveBtn = byId('modeLiveBtn'); if (planBtn && liveBtn) {{ planBtn.classList.toggle('secondary', !s.show_plan_enabled); liveBtn.classList.toggle('secondary', !!s.show_plan_enabled); }}
 }}
 
-if (byId('resetLivePlayerBtn')) byId('resetLivePlayerBtn').onclick = () => {{
-  if (!player) return;
-  player.pause(); player.removeAttribute('src'); player.load();
-  player.src='/stream.mp3?client=panel-live&t='+Date.now();
-  player.play().finally(refreshPlayerState);
-}};
 const oldRefreshCompact = refresh;
 refresh = async function() {{
   await oldRefreshCompact();

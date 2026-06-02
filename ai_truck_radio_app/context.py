@@ -216,6 +216,28 @@ def _minute_word(minute: int) -> str:
     return "минут"
 
 
+def daypart_name_for_hour(hour: int) -> str:
+    hour = int(hour) % 24
+    if 5 <= hour <= 11:
+        return "утро"
+    if 12 <= hour <= 17:
+        return "день"
+    if 18 <= hour <= 22:
+        return "вечер"
+    return "ночь"
+
+
+def daypart_suffix_for_hour(hour: int) -> str:
+    hour = int(hour) % 24
+    if 5 <= hour <= 11:
+        return "утра"
+    if 12 <= hour <= 17:
+        return "дня"
+    if 18 <= hour <= 22:
+        return "вечера"
+    return "ночи"
+
+
 def current_time_spoken_text_at_offset(offset_sec: float = 0.0) -> str:
     try:
         now = time.localtime(time.time() + float(offset_sec or 0.0))
@@ -227,7 +249,8 @@ def current_time_spoken_text_at_offset(offset_sec: float = 0.0) -> str:
     minute = int(now.tm_min)
     return (
         f"сегодня ровно {_num_words_ru(hour)} {_hour_word(hour)} "
-        f"{_num_words_ru(minute)} {_minute_word(minute)}, {weekday}, {now.tm_mday} {month}"
+        f"{_num_words_ru(minute)} {_minute_word(minute)} {daypart_suffix_for_hour(hour)}, "
+        f"{weekday}, {now.tm_mday} {month}"
     )
 
 
