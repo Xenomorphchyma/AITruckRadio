@@ -24,18 +24,6 @@ OMNIVOICE_NONVERBAL_TAGS = {
     "[dissatisfaction-hnn]",
 }
 
-RU_NONVERBAL_TAG_ALIASES = {
-    "смех": "[laughter]",
-    "смеется": "[laughter]",
-    "смеётся": "[laughter]",
-    "вздох": "[sigh]",
-    "удивление": "[surprise-ah]",
-    "вопрос": "[question-en]",
-    "подтверждение": "[confirmation-en]",
-    "недовольство": "[dissatisfaction-hnn]",
-}
-
-
 def _current_time_text() -> str:
     now = time.localtime()
     weekday = RUS_WEEKDAYS[now.tm_wday]
@@ -85,8 +73,8 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
     """Keep only OmniVoice-supported inline non-verbal tags.
 
     Unsupported square-bracket notes are removed so the TTS does not read random
-    stage directions. A few Russian aliases are mapped to the official English
-    tags because local LMs tend to translate instructions back to Russian.
+    stage directions. Russian aliases are deliberately not translated here: the
+    LM prompt must ask for the official English tags directly.
     """
     if not text:
         return text
@@ -97,9 +85,6 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
         normalized = f"[{inner}]"
         if enabled and normalized in OMNIVOICE_NONVERBAL_TAGS:
             return normalized
-        alias = RU_NONVERBAL_TAG_ALIASES.get(inner)
-        if enabled and alias:
-            return alias
         return ""
 
     text = re.sub(r"\[([^\[\]\n]{1,40})\]", repl, text)

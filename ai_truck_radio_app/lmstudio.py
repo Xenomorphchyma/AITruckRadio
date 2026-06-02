@@ -177,7 +177,11 @@ class LMStudioClient:
                 if ctx.get('guest_ref_status') and not ctx['guest_ref_status'].get('audio_exists'):
                     extra_lines.append("У гостя нет отдельного reference-аудио, поэтому голос будет стандартным/ближайшим доступным. Текст всё равно должен быть от имени 'Гость:'.")
             if ctx.get("allow_omnivoice_nonverbal_tags"):
-                extra_lines.append("OmniVoice разрешает редкие inline-эмоции. Можно использовать максимум один тег на блок и только из списка: [laughter], [sigh], [confirmation-en], [question-en], [question-ah], [question-oh], [question-ei], [question-yi], [surprise-ah], [surprise-oh], [surprise-wa], [surprise-yo], [dissatisfaction-hnn]. Не используй русские теги вроде [смех].")
+                extra_lines.append(
+                    "OmniVoice non-verbal tags: если эмоция действительно нужна, поставь максимум ОДИН официальный английский тег в начале одной реплики, сразу после 'Имя:'. "
+                    "Разрешённый whitelist: [laughter], [sigh], [confirmation-en], [question-en], [question-ah], [question-oh], [question-ei], [question-yi], [surprise-ah], [surprise-oh], [surprise-wa], [surprise-yo], [dissatisfaction-hnn]. "
+                    "Пример формата: 'Ирина: [laughter] Вот это поворот.' Не используй русские теги вроде [смех], [вздох], [удивление]. Не ставь больше одного тега в блоке."
+                )
             if ctx.get("retry_reason"):
                 extra_lines.append(f"Ошибки предыдущей попытки, которые нужно исправить: {ctx['retry_reason']}")
             if (not intro_allowed) and ctx.get("previous_track_info"):
@@ -253,7 +257,7 @@ class LMStudioClient:
                 f"{host_rule}\n"
                 "Пиши только готовый текст эфира. Не объясняй задачу. Не пиши списки. Не ставь дефисы в начале строк. "
                 "Не пиши ремарки в круглых скобках или звёздочках вроде '(включается следующий трек)' или '*подводит к музыке*'. "
-                + ("Квадратные скобки разрешены только для официальных OmniVoice non-verbal tags из списка выше; любые другие квадратные ремарки запрещены. " if ctx.get("allow_omnivoice_nonverbal_tags") else "Не пиши квадратные ремарки и TTS-теги. ")
+                + ("Квадратные скобки разрешены только для одного официального английского OmniVoice non-verbal tag из whitelist выше; русские теги и любые другие квадратные ремарки запрещены. " if ctx.get("allow_omnivoice_nonverbal_tags") else "Не пиши квадратные ремарки и TTS-теги. ")
                 + "Не произноси технические слова 'ПРЕДЫДУЩИЙ ТРЕК', 'СЛЕДУЮЩИЙ ТРЕК', 'План блока'. "
                 "Если название трека в поле выше написано по-русски, не заменяй его латиницей из баз данных. "
                 "Говори о музыке уважительно и позитивно, находи сильную сторону трека. "
