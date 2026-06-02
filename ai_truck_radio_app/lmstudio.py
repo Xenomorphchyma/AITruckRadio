@@ -176,6 +176,8 @@ class LMStudioClient:
                 extra_lines.append("В этом блоке есть гость. Можно использовать реплики 'Гость:'. Гость не заменяет ведущих, а появляется как короткий звонок/история в эфире.")
                 if ctx.get('guest_ref_status') and not ctx['guest_ref_status'].get('audio_exists'):
                     extra_lines.append("У гостя нет отдельного reference-аудио, поэтому голос будет стандартным/ближайшим доступным. Текст всё равно должен быть от имени 'Гость:'.")
+            if ctx.get("allow_omnivoice_nonverbal_tags"):
+                extra_lines.append("OmniVoice разрешает редкие inline-эмоции. Можно использовать максимум один тег на блок и только из списка: [laughter], [sigh], [confirmation-en], [question-en], [question-ah], [question-oh], [question-ei], [question-yi], [surprise-ah], [surprise-oh], [surprise-wa], [surprise-yo], [dissatisfaction-hnn]. Не используй русские теги вроде [смех].")
             if ctx.get("retry_reason"):
                 extra_lines.append(f"Ошибки предыдущей попытки, которые нужно исправить: {ctx['retry_reason']}")
             if (not intro_allowed) and ctx.get("previous_track_info"):
@@ -250,8 +252,9 @@ class LMStudioClient:
                 f"Тема блока: {dj_topic_label}\n"
                 f"{host_rule}\n"
                 "Пиши только готовый текст эфира. Не объясняй задачу. Не пиши списки. Не ставь дефисы в начале строк. "
-                "Не пиши ремарки в скобках или звёздочках вроде '(включается следующий трек)' или '*подводит к музыке*'. "
-                "Не произноси технические слова 'ПРЕДЫДУЩИЙ ТРЕК', 'СЛЕДУЮЩИЙ ТРЕК', 'План блока'. "
+                "Не пиши ремарки в круглых скобках или звёздочках вроде '(включается следующий трек)' или '*подводит к музыке*'. "
+                + ("Квадратные скобки разрешены только для официальных OmniVoice non-verbal tags из списка выше; любые другие квадратные ремарки запрещены. " if ctx.get("allow_omnivoice_nonverbal_tags") else "Не пиши квадратные ремарки и TTS-теги. ")
+                + "Не произноси технические слова 'ПРЕДЫДУЩИЙ ТРЕК', 'СЛЕДУЮЩИЙ ТРЕК', 'План блока'. "
                 "Если название трека в поле выше написано по-русски, не заменяй его латиницей из баз данных. "
                 "Говори о музыке уважительно и позитивно, находи сильную сторону трека. "
                 "Если дана рубрика эфира, встрои её естественно, но строго соблюдай инструкцию рубрики. Для загадки нельзя говорить 'завтра', 'завтра утром', 'вечером' или 'утром': ответ только в следующий выход ведущих. Если это блок ответа на загадку, сначала назови ответ и НЕ задавай новую загадку. Для гороскопа называй каждый знак в формате 'Овен: текст', 'Телец: текст'. "
@@ -281,7 +284,7 @@ class LMStudioClient:
             raise RuntimeError("LM Studio вернул пустой choices")
         msg = choices[0].get("message") or {}
         raw_text = str(msg.get("content") or "").strip()
-        cleaned = sanitize_general_radio_text(clean_host_text(raw_text))
+        cleaned = sanitize_general_radio_text(clean_host_text(raw_text, int(self.cfg.get("max_host_text_chars", 4000) or 4000)))
         if self.cfg.get("tts_debug_log", True):
             log("LM Studio вернул черновик ведущих: " + " ".join(cleaned.split())[:500])
         return cleaned

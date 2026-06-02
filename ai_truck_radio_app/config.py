@@ -74,6 +74,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "omnivoice_worker_job_timeout_sec": 420,
     "omnivoice_pronunciation_file": "prompts/pronunciation_ru.tsv",
     "omnivoice_normalize_ru": True,
+    "omnivoice_nonverbal_tags_enabled": True,
+    "omnivoice_nonverbal_tags_chance": 0.25,
     "omnivoice_ref_audio": "references/maxim_ref.wav",
     "omnivoice_ref_text": "",
     "omnivoice_instruct": "male, middle-aged, russian accent, low pitch",
@@ -344,6 +346,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Диагностика: не потерял ли парсер диалогов часть текста перед TTS.
     "tts_parse_validation_enabled": True,
     "tts_parse_validation_min_ratio": 0.86,
+    "max_host_text_chars": 4000,
 
     "two_hosts_enabled": True,  # legacy switch; new setting below is host_mode
     "host_mode": "mostly_solo",  # always_solo | always_duo | mostly_solo | smart_multi
@@ -586,7 +589,7 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     for _k in [
         "entertainment_enabled", "entertainment_in_live", "entertainment_in_planned", "horoscope_enabled",
         "riddles_enabled", "wrong_answer_game_enabled", "entertainment_generate_with_lm",
-        "horoscope_generate_before_radio", "entertainment_status_in_panel",
+        "horoscope_generate_before_radio", "entertainment_status_in_panel", "omnivoice_nonverbal_tags_enabled",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
@@ -594,14 +597,14 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
-        "entertainment_chance", "wrong_answer_game_chance",
+        "entertainment_chance", "wrong_answer_game_chance", "omnivoice_nonverbal_tags_chance",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
         "entertainment_min_blocks_between", "horoscope_chunk_min", "horoscope_chunk_max",
         "horoscope_blocks_before_riddle_min", "horoscope_blocks_before_riddle_max",
         "riddle_min_blocks_between", "riddle_options_count", "wrong_answer_game_min_blocks_between",
-        "entertainment_pack_timeout_sec", "entertainment_pack_max_items",
+        "entertainment_pack_timeout_sec", "entertainment_pack_max_items", "max_host_text_chars",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
         cfg.setdefault("live_blocking_dj_when_due", True)
@@ -633,6 +636,8 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("startup_intro_time_lead_sec", 60)
     cfg.setdefault("live_expected_speech_time_enabled", True)
     cfg.setdefault("omnivoice_prewarm_on_radio_start", True)
+    cfg.setdefault("omnivoice_nonverbal_tags_enabled", True)
+    cfg.setdefault("omnivoice_nonverbal_tags_chance", 0.25)
     cfg.setdefault("host_clock_retry_attempts", 3)
     cfg.setdefault("startup_context_retry_attempts", 4)
     cfg.setdefault("show_plan_enabled", False)
@@ -652,6 +657,7 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         cfg["listener_greetings_file"] = "data/greetings.txt"
     cfg.setdefault("listener_greetings_file", "data/greetings.txt")
     cfg.setdefault("tts_parse_validation_enabled", True)
+    cfg.setdefault("max_host_text_chars", 4000)
 
     # Runtime migration v0.5.1: panel-first workflow + continuous planned chunks.
     try:

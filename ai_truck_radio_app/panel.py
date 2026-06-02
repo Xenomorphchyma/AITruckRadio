@@ -62,7 +62,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
     checkbox_keys = [
         "weather_enabled", "news_enabled", "two_hosts_enabled", "tts_speak_host_names", "fade_enabled", "speech_bed_enabled", "speech_takeover_enabled",
         "track_profiles_enabled", "track_profiles_web_lookup_enabled", "track_profiles_force_rebuild_existing", "track_profiles_wikipedia_enabled", "track_profiles_wikidata_enabled", "track_profiles_deezer_enabled", "track_profiles_itunes_enabled", "track_profiles_enrich_missing_web_only", "track_profiles_enrich_only_if_no_sources", "night_mode_enabled", "hotkey_enabled", "lm_enabled", "lm_append_no_think",
-        "intro_before_first_track", "startup_intro_blocking", "async_prepare_dj", "show_experimental_tts_backends", "omnivoice_persistent_worker", "omnivoice_prewarm_on_radio_start", "omnivoice_normalize_ru",
+        "intro_before_first_track", "startup_intro_blocking", "async_prepare_dj", "show_experimental_tts_backends", "omnivoice_persistent_worker", "omnivoice_prewarm_on_radio_start", "omnivoice_normalize_ru", "omnivoice_nonverbal_tags_enabled",
         "speech_radio_processing_enabled", "speech_compressor_enabled", "speech_presence_eq_enabled", "speech_loudnorm_enabled", "speech_limiter_enabled", "jingle_enabled", "auto_generate_sweep_jingle",
         "show_plan_enabled", "show_plan_block_until_ready", "show_plan_include_intro", "show_plan_rebuild_on_start", "show_plan_continuous_extend", "show_plan_live_after_exhausted",
         "show_plan_intro_long_opening", "show_plan_unique_greetings", "show_plan_fill_music_while_generating", "show_plan_auto_enable_after_generation", "exact_hour_time_announce_enabled", "listener_greetings_enabled", "tts_parse_validation_enabled", "radio_autostart",
@@ -202,6 +202,9 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         checkbox("omnivoice_persistent_worker", "Держать OmniVoice в фоне", "Модель грузится один раз и потом быстрее озвучивает реплики."),
         checkbox("omnivoice_prewarm_on_radio_start", "Заранее грузить OmniVoice при включении радио", "Worker стартует сразу после кнопки включения, до первой реплики, чтобы первая озвучка не ждала загрузку модели."),
         checkbox("omnivoice_normalize_ru", "Normalizer/ударения", "Перед TTS применяет prompts/pronunciation_ru.tsv и исправляет спорные слова."),
+        checkbox("omnivoice_nonverbal_tags_enabled", "OmniVoice эмоции в тексте", "Разрешает редкие официальные теги вроде [laughter], [sigh], [surprise-ah]. Неофициальные теги удаляются перед TTS."),
+        input_num("omnivoice_nonverbal_tags_chance", "Шанс OmniVoice эмоции", "Вероятность разрешить LM один non-verbal tag в конкретном речевом блоке.", "0", "1", "0.05"),
+        input_num("max_host_text_chars", "Лимит текста ведущих", "Аварийный лимит после ответа LM. 4000 достаточно для длинного планового вступления без обрубания.", "600", "12000", "100"),
         input_num("speech_voice_volume", "Громкость голоса", "Если ведущие тише музыки — подними до 1.45–1.8.", "0.2", "3", "0.05"),
         input_num("music_volume", "Громкость музыки", "Если песни давят ведущих, держи 0.70–0.85. Это не трогает громкость речи.", "0.2", "1.5", "0.05"),
         input_num("speech_loudnorm_i", "Целевая громкость речи LUFS", "Чем ближе к -10, тем громче. Безопасно: -13...-12.", "-22", "-10", "0.5"),

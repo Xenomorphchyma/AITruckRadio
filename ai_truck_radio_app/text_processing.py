@@ -8,6 +8,33 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ai_truck_radio_app.config import DEFAULT_CONFIG, RUS_MONTHS, RUS_WEEKDAYS
 
+OMNIVOICE_NONVERBAL_TAGS = {
+    "[laughter]",
+    "[sigh]",
+    "[confirmation-en]",
+    "[question-en]",
+    "[question-ah]",
+    "[question-oh]",
+    "[question-ei]",
+    "[question-yi]",
+    "[surprise-ah]",
+    "[surprise-oh]",
+    "[surprise-wa]",
+    "[surprise-yo]",
+    "[dissatisfaction-hnn]",
+}
+
+RU_NONVERBAL_TAG_ALIASES = {
+    "смех": "[laughter]",
+    "смеется": "[laughter]",
+    "смеётся": "[laughter]",
+    "вздох": "[sigh]",
+    "удивление": "[surprise-ah]",
+    "вопрос": "[question-en]",
+    "подтверждение": "[confirmation-en]",
+    "недовольство": "[dissatisfaction-hnn]",
+}
+
 
 def _current_time_text() -> str:
     now = time.localtime()
@@ -16,7 +43,7 @@ def _current_time_text() -> str:
     return f"{now.tm_hour:02d}:{now.tm_min:02d}, {weekday}, {now.tm_mday} {month} {now.tm_year}"
 
 
-def clean_host_text(text: str) -> str:
+def clean_host_text(text: str, max_chars: int = 4000) -> str:
     text = text.replace("\r", "\n")
     # Убираем thinking-теги, если модель всё-таки их вернула.
     lower = text.lower()
@@ -47,10 +74,43 @@ def clean_host_text(text: str) -> str:
         if line:
             lines.append(line)
     text = "\n".join(lines) if lines else " ".join(text.split())
-    if len(text) > 1200:
-        text = text[:1200].rsplit(" ", 1)[0] + "."
+    max_chars = max(600, int(max_chars or 4000))
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit(" ", 1)[0] + "."
     text = trim_to_complete_sentence(text)
     return text.strip() or random.choice(DEFAULT_CONFIG["fallback_host_phrases"])
+
+
+def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> str:
+    """Keep only OmniVoice-supported inline non-verbal tags.
+
+    Unsupported square-bracket notes are removed so the TTS does not read random
+    stage directions. A few Russian aliases are mapped to the official English
+    tags because local LMs tend to translate instructions back to Russian.
+    """
+    if not text:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        inner = match.group(1).strip().lower()
+        normalized = f"[{inner}]"
+        if enabled and normalized in OMNIVOICE_NONVERBAL_TAGS:
+            return normalized
+        alias = RU_NONVERBAL_TAG_ALIASES.get(inner)
+        if enabled and alias:
+            return alias
+        return ""
+
+    text = re.sub(r"\[([^\[\]\n]{1,40})\]", repl, text)
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_omnivoice_nonverbal_tags(text: str) -> str:
+    if not text:
+        return text
+    return re.sub(r"\s+", " ", re.sub(r"\[[^\[\]\n]{1,40}\]", "", text)).strip()
 
 
 def sanitize_general_radio_text(text: str) -> str:

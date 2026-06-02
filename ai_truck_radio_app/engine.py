@@ -47,6 +47,7 @@ from ai_truck_radio_app.server import make_ets2_line
 from ai_truck_radio_app.text_processing import (
     clean_host_text,
     context_violations_for_host_text,
+    normalize_omnivoice_nonverbal_tags,
     normalize_generated_radio_text,
     postprocess_host_text_for_air,
     repair_time_context_text,
@@ -708,7 +709,8 @@ class RadioEngine:
         self.pending_riddle = None
         return pack
 
-    def _choose_entertainment_for_block(self, *, intro: bool = False, planned: bool = False) -> Dict[str, Any]:
+    def _choose_entertainment_for_block(self, *, intro: bool = False, planned: bool = False, block_index: Optional[int] = None) -> Dict[str, Any]:
+        current_block = self.speech_blocks_played if block_index is None else int(block_index)
         if intro or not self.cfg.get('entertainment_enabled', False):
             return {}
         if planned and not self.cfg.get('entertainment_in_planned', True):
@@ -719,7 +721,7 @@ class RadioEngine:
         if self.pending_riddle:
             r = self.pending_riddle
             self.pending_riddle = None
-            self.last_entertainment_block = self.speech_blocks_played
+            self.last_entertainment_block = current_block
             self.entertainment_block_count += 1
             q = str(r.get('question') or '')
             ans = str(r.get('answer') or '')
@@ -731,20 +733,20 @@ class RadioEngine:
                 'dj_length': 'medium',
                 'riddle_answer_block': True,
             }
-        if (self.speech_blocks_played - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
+        if (current_block - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
             return {}
         if random.random() > float(self.cfg.get('entertainment_chance', 0.55) or 0.55):
             return {}
         pack = self.prepare_entertainment_pack('block')
         # Гость в эфире: короткая история/звонок. Может вклиниваться реже остальных рубрик.
         guest_allowed = bool(self.cfg.get('guest_enabled', False)) and ((planned and self.cfg.get('guest_in_planned', True)) or ((not planned) and self.cfg.get('guest_in_live', True)))
-        if guest_allowed and (self.speech_blocks_played - self.last_guest_block) >= int(self.cfg.get('guest_min_blocks_between', 6) or 6):
+        if guest_allowed and (current_block - self.last_guest_block) >= int(self.cfg.get('guest_min_blocks_between', 6) or 6):
             if random.random() < float(self.cfg.get('guest_chance', 0.14) or 0.14):
                 guests = pack.get('guest_stories') or []
                 if guests:
                     g = random.choice(guests)
-                    self.last_guest_block = self.speech_blocks_played
-                    self.last_entertainment_block = self.speech_blocks_played
+                    self.last_guest_block = current_block
+                    self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
                     return {
                         'entertainment_text': 'Гость в эфире. История гостя: ' + json.dumps(g, ensure_ascii=False),
@@ -754,13 +756,13 @@ class RadioEngine:
                         'force_guest': True,
                     }
         # Игра “ответь неправильно” может вклиниться между гороскопами/загадками.
-        if self.cfg.get('wrong_answer_game_enabled', True) and (self.speech_blocks_played - self.last_wrong_game_block) >= int(self.cfg.get('wrong_answer_game_min_blocks_between', 4) or 4):
+        if self.cfg.get('wrong_answer_game_enabled', True) and (current_block - self.last_wrong_game_block) >= int(self.cfg.get('wrong_answer_game_min_blocks_between', 4) or 4):
             if random.random() < float(self.cfg.get('wrong_answer_game_chance', 0.18) or 0.18):
                 games = pack.get('wrong_games') or []
                 if games:
                     g = random.choice(games)
-                    self.last_wrong_game_block = self.speech_blocks_played
-                    self.last_entertainment_block = self.speech_blocks_played
+                    self.last_wrong_game_block = current_block
+                    self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
                     return {
                         'entertainment_text': 'Мини-игра «ответь неправильно». ' + json.dumps(g, ensure_ascii=False),
@@ -770,13 +772,13 @@ class RadioEngine:
                     }
         # Чередование: 2–3 гороскопа, затем загадка.
         if self.cfg.get('riddles_enabled', True) and self.horoscope_blocks_since_riddle >= self.horoscope_blocks_before_riddle_target:
-            if (self.speech_blocks_played - self.last_riddle_block) >= int(self.cfg.get('riddle_min_blocks_between', 3) or 3):
+            if (current_block - self.last_riddle_block) >= int(self.cfg.get('riddle_min_blocks_between', 3) or 3):
                 riddles = pack.get('riddles') or []
                 if riddles:
                     r = random.choice(riddles)
                     self.pending_riddle = r
-                    self.last_riddle_block = self.speech_blocks_played
-                    self.last_entertainment_block = self.speech_blocks_played
+                    self.last_riddle_block = current_block
+                    self.last_entertainment_block = current_block
                     self.horoscope_blocks_since_riddle = 0
                     self.horoscope_blocks_before_riddle_target = random.randint(
                         max(1, int(self.cfg.get('horoscope_blocks_before_riddle_min', 2) or 2)),
@@ -799,7 +801,7 @@ class RadioEngine:
                 chunk = hor[self.horoscope_index:self.horoscope_index + count]
                 self.horoscope_index += len(chunk)
                 self.horoscope_blocks_since_riddle += 1
-                self.last_entertainment_block = self.speech_blocks_played
+                self.last_entertainment_block = current_block
                 self.entertainment_block_count += 1
                 done = self.horoscope_index >= len(hor)
                 return {
@@ -855,9 +857,21 @@ class RadioEngine:
                 greeting_text = read_greeting_line(self.cfg)
         dj_plan = self._choose_dj_plan(bool(intro_allowed), bool(news_text), bool(weather_text))
         planned_mode = bool(overrides and overrides.get("plan_mode") == "prepared_program")
+        entertainment_block_index: Optional[int] = None
+        if overrides and overrides.get("speech_blocks_played") not in [None, ""]:
+            try:
+                entertainment_block_index = int(overrides.get("speech_blocks_played") or 0)
+            except Exception:
+                entertainment_block_index = None
         entertainment_overrides: Dict[str, Any] = {}
         if not (overrides and overrides.get("entertainment_text")):
-            entertainment_overrides = self._choose_entertainment_for_block(intro=bool(intro_allowed), planned=planned_mode)
+            entertainment_overrides = self._choose_entertainment_for_block(intro=bool(intro_allowed), planned=planned_mode, block_index=entertainment_block_index)
+        tts_backend = str(self.cfg.get("tts_backend", "")).lower().strip()
+        allow_omni_tags = (
+            tts_backend in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"}
+            and bool(self.cfg.get("omnivoice_nonverbal_tags_enabled", True))
+            and random.random() < clamp(float(self.cfg.get("omnivoice_nonverbal_tags_chance", 0.25) or 0.25), 0.0, 1.0)
+        )
         ctx = {
             "style": style,
             "style_prompt": style_prompt(style, night),
@@ -884,6 +898,7 @@ class RadioEngine:
             "dj_topic": dj_plan.get("topic", "music"),
             "dj_topic_label": dj_plan.get("topic_label", "музыка"),
             "dj_instruction": dj_plan.get("instruction", "Короткая радиоподводка."),
+            "allow_omnivoice_nonverbal_tags": allow_omni_tags,
         }
         if entertainment_overrides:
             ctx.update(entertainment_overrides)
@@ -981,7 +996,12 @@ class RadioEngine:
                 log(f"LM Studio не ответил, беру fallback-фразу: {e}")
         if not text:
             text = random.choice(list(self.cfg.get("fallback_host_phrases") or DEFAULT_CONFIG["fallback_host_phrases"]))
-        text = sanitize_general_radio_text(postprocess_host_text_for_air(normalize_generated_radio_text(clean_host_text(text)), ctx))
+        text = sanitize_general_radio_text(postprocess_host_text_for_air(normalize_generated_radio_text(clean_host_text(text, int(self.cfg.get("max_host_text_chars", 4000) or 4000))), ctx))
+        text = normalize_omnivoice_nonverbal_tags(
+            text,
+            enabled=bool(self.cfg.get("omnivoice_nonverbal_tags_enabled", True))
+            and str(self.cfg.get("tts_backend", "")).lower().strip() in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"},
+        )
         # На всякий случай не даём повторному блоку снова открывать эфир.
         if not (intro_allowed or False):
             text = re.sub(r"(?i)\b(добро пожаловать|начинаем эфир|с вами снова)\b[^.!?…]*[.!?…]?", "", text).strip() or text
@@ -1696,6 +1716,7 @@ class RadioEngine:
 
         items: List[PlannedItem] = []
         planned_elapsed = 0.0
+        planned_speech_blocks = 0
         start_ts = time.time()
         announced_hours: set[int] = set()
         used_greetings: set[str] = set()
@@ -1711,7 +1732,7 @@ class RadioEngine:
             return main, exact
 
         def add_speech(prev_track: Optional[Track], next_track: Optional[Track], intro: bool, reason: str, elapsed: float) -> None:
-            nonlocal planned_elapsed
+            nonlocal planned_elapsed, planned_speech_blocks
             self.show_plan_status = f"генерирую и озвучиваю блок ведущих: {reason}"
             self.show_plan_progress = {"current": int(min(planned_elapsed, target_sec)), "total": int(target_sec), "percent": int(35 + min(55, (planned_elapsed / max(1.0, target_sec)) * 55)), "detail": self.show_plan_status}
             length = "intro_long" if (intro and self.cfg.get("show_plan_intro_long_opening", True)) else ("medium" if intro else ("long" if random.random() < float(self.cfg.get("show_plan_long_block_chance", 0.24) or 0.24) else random.choice(["short", "medium", "medium"])))
@@ -1734,6 +1755,7 @@ class RadioEngine:
                 "dj_length": length,
                 "dj_instruction": instruction,
                 "dj_topic_label": reason,
+                "speech_blocks_played": planned_speech_blocks,
                 "plan_mode": "prepared_program",
                 "planned_previous_track": prev_track.display_name if prev_track else "ещё ничего не играло",
                 "planned_next_track": next_track.display_name if next_track else "следующий трек не выбран",
@@ -1744,6 +1766,7 @@ class RadioEngine:
             dur = ffprobe_duration(self.cfg, seg.mp3) or 25.0
             items.append(PlannedItem(kind="speech", path=seg.mp3, title="Ведущие в эфире", text=seg.text, duration_sec=float(dur)))
             planned_elapsed += float(dur)
+            planned_speech_blocks += 1
             # Remember generated text while planning to reduce repetition in later planned blocks.
             self._record_host_text_as_aired(seg.text)
 
