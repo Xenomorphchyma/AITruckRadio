@@ -108,6 +108,9 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
         return ""
 
     text = re.sub(r"\[([^\[\]\n]{1,40})\]", repl, text)
+    # Empty dangling speaker markers like "Ирина:." are prompt artifacts, not speech.
+    text = re.sub(r"(?<![\wА-Яа-яЁё])([А-ЯЁ][А-Яа-яЁёA-Za-z-]{1,32})\s*[:：]\s*[.!?]?\s*$", "", text).strip()
+    text = re.sub(r"(?<![\wА-Яа-яЁё])([А-ЯЁ][А-Яа-яЁёA-Za-z-]{1,32})\s*[:：]\s*,\s*", r"\1: ", text)
     text = re.sub(r"\s+([,.!?])", r"\1", text)
     return re.sub(r"\s+", " ", text).strip()
 

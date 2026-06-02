@@ -183,6 +183,54 @@ def current_time_text_at_offset(offset_sec: float = 0.0) -> str:
     return f"{now.tm_hour:02d}:{now.tm_min:02d}, {weekday}, {now.tm_mday} {month} {now.tm_year}"
 
 
+_NUM_0_59 = [
+    "ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять",
+    "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать", "пятнадцать",
+    "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать", "двадцать",
+]
+_TENS = {2: "двадцать", 3: "тридцать", 4: "сорок", 5: "пятьдесят"}
+
+
+def _num_words_ru(n: int) -> str:
+    n = int(n)
+    if 0 <= n < len(_NUM_0_59):
+        return _NUM_0_59[n]
+    tens, ones = divmod(n, 10)
+    base = _TENS.get(tens, str(n))
+    return base if ones == 0 else f"{base} {_NUM_0_59[ones]}"
+
+
+def _hour_word(hour: int) -> str:
+    if hour % 10 == 1 and hour % 100 != 11:
+        return "час"
+    if hour % 10 in {2, 3, 4} and hour % 100 not in {12, 13, 14}:
+        return "часа"
+    return "часов"
+
+
+def _minute_word(minute: int) -> str:
+    if minute % 10 == 1 and minute % 100 != 11:
+        return "минута"
+    if minute % 10 in {2, 3, 4} and minute % 100 not in {12, 13, 14}:
+        return "минуты"
+    return "минут"
+
+
+def current_time_spoken_text_at_offset(offset_sec: float = 0.0) -> str:
+    try:
+        now = time.localtime(time.time() + float(offset_sec or 0.0))
+    except Exception:
+        now = time.localtime()
+    weekday = RUS_WEEKDAYS[now.tm_wday]
+    month = RUS_MONTHS[now.tm_mon - 1]
+    hour = int(now.tm_hour)
+    minute = int(now.tm_min)
+    return (
+        f"сегодня ровно {_num_words_ru(hour)} {_hour_word(hour)} "
+        f"{_num_words_ru(minute)} {_minute_word(minute)}, {weekday}, {now.tm_mday} {month}"
+    )
+
+
 def is_night_now(cfg: Dict[str, Any]) -> bool:
     if not cfg.get("night_mode_enabled", True):
         return False

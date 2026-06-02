@@ -251,6 +251,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "guest_generate_before_radio": True,
     "guest_name": "Гость",
     "guest_role": "слушатель с историей",
+    "guest_voice_mode": "design",  # design | reference | auto
+    "guest_voice_instruct": "male, young adult, russian accent, moderate pitch",
     "guest_ref_audio": "references/guest_ref.wav",
     "guest_ref_text": "references/guest_ref.txt",
     "guest_chance": 0.14,
@@ -638,6 +640,8 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("omnivoice_prewarm_on_radio_start", True)
     cfg.setdefault("omnivoice_nonverbal_tags_enabled", True)
     cfg.setdefault("omnivoice_nonverbal_tags_chance", 0.25)
+    cfg.setdefault("guest_voice_mode", "design")
+    cfg.setdefault("guest_voice_instruct", "male, young adult, russian accent, moderate pitch")
     cfg.setdefault("host_clock_retry_attempts", 3)
     cfg.setdefault("startup_context_retry_attempts", 4)
     cfg.setdefault("show_plan_enabled", False)

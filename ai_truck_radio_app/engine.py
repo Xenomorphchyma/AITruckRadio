@@ -35,6 +35,7 @@ from ai_truck_radio_app.context import (
     WeatherClient,
     current_time_text,
     current_time_text_at_offset,
+    current_time_spoken_text_at_offset,
     exact_hour_announcement_text,
     is_night_now,
     read_greeting_line,
@@ -619,6 +620,9 @@ class RadioEngine:
 
     def _guest_host_cfg(self) -> Dict[str, Any]:
         name = str(self.cfg.get('guest_name') or 'Гость').strip() or 'Гость'
+        voice_mode = str(self.cfg.get('guest_voice_mode') or 'design').strip().lower()
+        if voice_mode not in {'design', 'reference', 'auto'}:
+            voice_mode = 'design'
         ref_audio = Path(str(self.cfg.get('guest_ref_audio') or 'references/guest_ref.wav'))
         if not ref_audio.is_absolute():
             ref_audio = BASE_DIR / ref_audio
@@ -627,11 +631,13 @@ class RadioEngine:
             ref_text = BASE_DIR / ref_text
         host = {
             'name': name,
-            'aliases': [name, 'Гость', 'Слушатель'],
+            'aliases': list(dict.fromkeys([name, 'Гость', 'Слушатель'])),
             'persona': str(self.cfg.get('guest_role') or 'слушатель с короткой живой историей'),
-            'omnivoice_instruct': 'guest voice, natural radio caller, friendly, expressive, clear Russian speech',
+            'omnivoice_instruct': str(self.cfg.get('guest_voice_instruct') or 'male, young adult, russian accent, moderate pitch'),
         }
-        if ref_audio.exists():
+        use_reference = ref_audio.exists() and voice_mode in {'reference', 'auto'}
+        if use_reference:
+            host['omnivoice_mode'] = 'clone'
             host['omnivoice_ref_audio'] = str(ref_audio)
             if ref_text.exists():
                 host['omnivoice_ref_text'] = str(ref_text)
@@ -821,6 +827,7 @@ class RadioEngine:
             if two_hosts is None:
                 two_hosts = two
         time_text = ""
+        spoken_time_text = ""
         exact_time_text = ""
         time_offset_sec = 0.0
         if overrides and overrides.get("time_offset_sec") not in [None, ""]:
@@ -837,6 +844,7 @@ class RadioEngine:
             # Время всегда берём с компьютера, но для заранее подготовленной речи
             # передаём ожидаемое время выхода в эфир, а не время начала генерации.
             time_text = current_time_text_at_offset(time_offset_sec)
+            spoken_time_text = current_time_spoken_text_at_offset(time_offset_sec)
             exact_time_text = exact_hour_announcement_text(self.cfg)
             if exact_time_text:
                 hour_key = time.localtime(time.time() + time_offset_sec).tm_hour
@@ -880,6 +888,7 @@ class RadioEngine:
             "speech_blocks_played": self.speech_blocks_played,
             "tracks_played": self.tracks_played,
             "time_text": time_text,
+            "spoken_time_text": spoken_time_text if time_text else "",
             "computer_hour": time.localtime(time.time() + time_offset_sec).tm_hour,
             "computer_minute": time.localtime(time.time() + time_offset_sec).tm_min,
             "time_offset_sec": time_offset_sec,
@@ -1721,15 +1730,16 @@ class RadioEngine:
         announced_hours: set[int] = set()
         used_greetings: set[str] = set()
 
-        def plan_time_text(elapsed: float) -> Tuple[str, str]:
+        def plan_time_text(elapsed: float) -> Tuple[str, str, str]:
             ts = time.localtime(start_ts + elapsed)
             main = f"{ts.tm_hour:02d}:{ts.tm_min:02d}, {RUS_WEEKDAYS[ts.tm_wday]}, {ts.tm_mday} {RUS_MONTHS[ts.tm_mon-1]} {ts.tm_year}"
+            spoken = current_time_spoken_text_at_offset((start_ts + elapsed) - time.time())
             exact = ""
             if self.cfg.get("exact_hour_time_announce_enabled", True) and ts.tm_min <= int(self.cfg.get("exact_hour_window_minutes", 3) or 3):
                 if ts.tm_hour not in announced_hours:
                     exact = exact_hour_announcement_text(self.cfg, ts)
                     announced_hours.add(ts.tm_hour)
-            return main, exact
+            return main, spoken, exact
 
         def add_speech(prev_track: Optional[Track], next_track: Optional[Track], intro: bool, reason: str, elapsed: float) -> None:
             nonlocal planned_elapsed, planned_speech_blocks
@@ -1737,7 +1747,7 @@ class RadioEngine:
             self.show_plan_progress = {"current": int(min(planned_elapsed, target_sec)), "total": int(target_sec), "percent": int(35 + min(55, (planned_elapsed / max(1.0, target_sec)) * 55)), "detail": self.show_plan_status}
             length = "intro_long" if (intro and self.cfg.get("show_plan_intro_long_opening", True)) else ("medium" if intro else ("long" if random.random() < float(self.cfg.get("show_plan_long_block_chance", 0.24) or 0.24) else random.choice(["short", "medium", "medium"])))
             length, instruction = self._planned_dj_instruction(length)
-            ttext, exact = plan_time_text(elapsed)
+            ttext, spoken_ttext, exact = plan_time_text(elapsed)
             greeting = ""
             if self.cfg.get("listener_greetings_enabled", True) and (intro or random.random() < float(self.cfg.get("listener_greetings_chance", 0.22) or 0.22)):
                 if self.cfg.get("show_plan_unique_greetings", True):
@@ -1748,6 +1758,7 @@ class RadioEngine:
             weather = self.weather.get_weather_text() if self.cfg.get("weather_enabled", False) and random.random() < float(self.cfg.get("weather_context_chance", 0.25) or 0.25) else ""
             overrides = {
                 "time_text": ttext,
+                "spoken_time_text": spoken_ttext,
                 "exact_time_text": exact,
                 "greeting_text": greeting,
                 "news_text": news,

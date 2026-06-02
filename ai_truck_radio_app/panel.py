@@ -77,14 +77,24 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
 
     hosts_editor_json = json.dumps(cfg.get("hosts") or default_config.get("hosts") or [], ensure_ascii=False)
     guest_status = engine._guest_ref_status() if hasattr(engine, "_guest_ref_status") else {"audio_exists": False, "audio": "references/guest_ref.wav"}
-    guest_warning = "" if guest_status.get("audio_exists") else f"<div class='warn-box'>Файл голоса гостя не найден: {esc(guest_status.get('audio'))}. Будет использован стандартный/ближайший голос OmniVoice.</div>"
+    guest_voice_mode = str(cfg.get("guest_voice_mode", default_config.get("guest_voice_mode", "design")) or "design")
+    guest_warning = "" if guest_voice_mode != "reference" or guest_status.get("audio_exists") else f"<div class='warn-box'>Reference-файл гостя не найден: {esc(guest_status.get('audio'))}. Переключи режим голоса гостя на design или добавь файл.</div>"
+    favorite_names = [x.strip() for x in str(cfg.get("host_favorite_names", "") or "").replace(";", ",").split(",") if x.strip()]
+    favorite_names_json = json.dumps(favorite_names, ensure_ascii=False)
+    favorite_hosts_picker = (
+        f'<div class="setting favorite-hosts-setting" data-setting-key="host_favorite_names">'
+        f'<div class="setting-title"><span>Кто чаще в эфире</span><span class="tip" title="Выбери ведущих из списка ниже. Их не надо писать вручную.">?</span>{reset_button("host_favorite_names")}</div>'
+        f'<input type="hidden" name="host_favorite_names" id="hostFavoriteNames" value="{esc(cfg.get("host_favorite_names", default_config.get("host_favorite_names", "")))}">'
+        f'<div id="favoriteHostsPicker" class="favorite-hosts-picker" data-selected="{esc(favorite_names_json)}"></div>'
+        f'</div>'
+    )
     hosts_settings = "".join([
-        '<div class="host-editor-note">Здесь можно добавлять и править ведущих. Для OmniVoice лучше указывать reference WAV/MP3 и текст рядом.</div>',
+        '<div class="host-editor-note">Здесь можно добавлять ведущих и управлять их голосами. Ведущим обычно полезен reference WAV/MP3, а гостям-звонящим можно использовать OmniVoice design без reference.</div>',
         f'<input type="hidden" name="hosts_json" id="hostsJson" value="{esc(hosts_editor_json)}">',
         '<div id="hostsEditor" class="hosts-editor"></div>',
         '<div class="actions-row"><button type="button" id="addHostBtn" class="secondary">+ Добавить ведущего</button><button type="button" id="resetHostsBtn" class="ghost">Вернуть стандартных</button></div>',
         select_box("host_mode", "Режим ведущих", ["always_solo", "mostly_solo", "always_duo", "smart_multi"], "always_solo — всегда один; mostly_solo — чаще один, но вступление дуэтом; always_duo — всегда два; smart_multi — гибко выбирает включённых ведущих."),
-        input_text("host_favorite_names", "Кто чаще в эфире", "Имена через запятую. Например: Максим, Ирина. Эти ведущие чаще выбираются в solo/duo/multi режимах."),
+        favorite_hosts_picker,
         input_num("host_favorite_chance", "Шанс выбора частых ведущих", "Вероятность выбрать ведущих из списка 'Кто чаще в эфире'.", "0", "1", "0.05"),
         input_num("host_multi_chance", "Шанс нескольких ведущих", "Для smart_multi: как часто в одном блоке звучат 2–3 ведущих, а не один.", "0", "1", "0.05"),
         input_num("host_active_count_min", "Минимум ведущих в multi", "Для smart_multi.", "1", "5", "1"),
@@ -98,8 +108,10 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         checkbox("guest_generate_before_radio", "Готовить гостевые истории перед стартом", "Истории гостя попадут в общий пакет рубрик."),
         input_text("guest_name", "Имя гостя", "Имя, с которого начинаются реплики гостя. Например: Гость, Алексей, Слушатель."),
         input_text("guest_role", "Роль гостя", "Например: слушатель с историей, музыкальный гость, человек с забавной ситуацией."),
-        input_text("guest_ref_audio", "Reference-аудио гостя", "Если файла нет, панель предупредит, а OmniVoice использует стандартный/ближайший голос."),
-        input_text("guest_ref_text", "Reference-текст гостя", "Текст, который соответствует reference-аудио гостя."),
+        select_box("guest_voice_mode", "Голос гостя", ["design", "auto", "reference"], "design — голос без reference, удобно для звонящих; auto — reference если файл есть, иначе design; reference — строго указанный файл."),
+        input_text("guest_voice_instruct", "Описание голоса гостя", "Только официальные OmniVoice-теги через запятую: male/female, young adult, middle-aged, russian accent, moderate pitch и т.п."),
+        input_text("guest_ref_audio", "Reference-аудио гостя", "Нужно только в режиме reference или auto."),
+        input_text("guest_ref_text", "Reference-текст гостя", "Текст рядом с reference-аудио, если используешь clone."),
         input_num("guest_chance", "Шанс появления гостя", "Вероятность гостевого блока среди рубрик.", "0", "1", "0.05"),
         input_num("guest_min_blocks_between", "Пауза между гостями", "Минимум выходов ведущих между гостевыми историями.", "1", "50", "1"),
         input_num("guest_story_count", "Сколько историй гостя готовить", "Сколько коротких историй подготовить в пакете рубрик.", "1", "20", "1"),
@@ -271,7 +283,7 @@ button:hover {{ filter:brightness(1.07); }} button:active {{ transform:translate
 .layout {{ display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; padding:12px; max-width:1540px; height:calc(100vh - 58px); margin:0 auto; overflow:hidden; }} @media(max-width:980px){{ html,body{{overflow:auto;height:auto;}} .layout{{grid-template-columns:1fr;height:auto;overflow:visible;}} }}
 main {{ min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
 .card {{ background:linear-gradient(180deg,rgba(23,32,51,.96),rgba(15,23,42,.96)); border:1px solid var(--line); box-shadow:var(--shadow); border-radius:8px; padding:10px; min-width:0; }}
-.side {{ min-width:0; overflow:hidden; display:grid; grid-template-rows:auto auto auto minmax(0,1fr); gap:8px; align-content:start; }} .side .card {{ margin:0; }}
+.side {{ min-width:0; overflow:hidden; display:grid; grid-template-rows:auto auto auto; gap:8px; align-content:start; }} .side .card {{ margin:0; }}
 .now {{ font-size:14px; font-weight:900; margin:1px 0 6px; overflow-wrap:anywhere; line-height:1.15; }} .muted {{ color:var(--muted); }} .mini {{ font-size:11px; color:var(--muted); line-height:1.2; }}
 .side-hero {{ display:grid; gap:7px; }} .side-title {{ display:flex; justify-content:space-between; gap:8px; align-items:center; }} .status-pills {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; font-size:11px; }} .pill {{ background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.05); border-radius:8px; padding:6px; min-width:0; overflow-wrap:anywhere; }} .pill b {{ color:#fff; }} .pill .ok {{ color:var(--good); }}
 .mode-card {{ display:grid; gap:6px; padding:8px; border:1px solid rgba(124,199,255,.22); border-radius:8px; background:rgba(124,199,255,.06); }} .mode-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:6px; }} .mode-actions button {{ min-height:36px; white-space:normal; line-height:1.12; }}
@@ -279,15 +291,20 @@ main {{ min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
 .controls .side-check {{ grid-column:1/-1; grid-row:4; }}
 .controls #clearGenBtn {{ grid-column:2; grid-row:3; }}
 .side-check {{ display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid rgba(255,255,255,.06); border-radius:8px; background:rgba(0,0,0,.16); font-size:12px; }} .side-check input {{ width:auto; flex:0 0 auto; }}
-.player-card {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; align-content:start; }}
-.player-card .mini,.player-card audio,.player-card .toast {{ grid-column:1/-1; }}
-.player-card button {{ min-height:34px; padding:7px 8px; font-size:12px; line-height:1.08; }}
+.player-card {{ position:fixed; left:50%; bottom:14px; z-index:30; transform:translateX(-50%); width:min(720px,calc(100vw - 32px)); display:grid; grid-template-columns:auto minmax(220px,1fr) auto auto auto; gap:8px; align-items:center; padding:9px; background:rgba(15,23,42,.96); backdrop-filter:blur(14px); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); }}
+.player-card.is-collapsed {{ width:auto; grid-template-columns:auto auto; }}
+.player-card.is-collapsed audio,.player-card.is-collapsed .player-buttons,.player-card.is-collapsed #resetLivePlayerBtn,.player-card.is-collapsed .toast {{ display:none; }}
+.player-card .mini {{ color:var(--muted); font-size:11px; white-space:nowrap; }}
+.player-card button {{ min-height:34px; padding:7px 10px; font-size:12px; line-height:1.08; }}
 .player-buttons {{ display:contents; }} audio {{ width:100%; max-width:100%; height:32px; display:block; }}
+#playBtn {{ background:#3a4254; color:#d8e2f5; border:1px solid #586176; }}
+#playBtn.is-live {{ background:#d84545; color:#fff; border-color:#ff7b7b; }}
+#playerCollapseBtn {{ width:34px; padding:7px 0; }}
 .nav-card {{ display:grid; gap:8px; }}
 .tabs {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; overflow:visible; flex:0 0 auto; }}
 .tab {{ display:flex; align-items:center; justify-content:flex-start; min-height:32px; padding:7px 8px; background:#101827; color:var(--text); border:1px solid var(--line); white-space:normal; text-align:left; line-height:1.1; font-size:12px; }}
 .tab.active {{ background:linear-gradient(90deg,var(--accent),#a9dcff); color:#07101f; border-color:transparent; }}
-.tab-panel {{ display:none; position:absolute; inset:0; min-height:0; overflow:auto; padding-right:4px; }}
+.tab-panel {{ display:none; position:absolute; inset:0; min-height:0; overflow-y:auto; overflow-x:hidden; padding:0 4px 92px 0; }}
 .tab-panel.active {{ display:block; }}
 #cfgForm {{ min-height:0; height:100%; flex:1; position:relative; display:block; overflow:hidden; }}
 .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; align-items:start; }}
@@ -311,10 +328,13 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
 .floating-save {{ position:fixed; right:18px; bottom:16px; z-index:20; box-shadow:0 8px 26px rgba(0,0,0,.35); }}
 .disabled-setting {{ opacity:.38; filter:grayscale(.55); }} .disabled-setting input,.disabled-setting select,.disabled-setting textarea {{ pointer-events:none; }} .disabled-setting .reset-key {{ display:none; }}
 .host-editor-note,.warn-box {{ grid-column:1/-1; color:var(--muted); border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.035); border-radius:8px; padding:10px; }} .warn-box {{ color:#ffd6a0; border-color:rgba(255,209,102,.28); }}
+.favorite-hosts-picker {{ display:flex; flex-wrap:wrap; gap:7px; }}
+.favorite-hosts-picker label {{ display:inline-flex; align-items:center; gap:6px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:#101827; color:#dbe7ff; cursor:pointer; }}
+.favorite-hosts-picker input {{ width:auto; }}
 .hosts-editor {{ grid-column:1/-1; display:grid; gap:10px; }} .host-card {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; border:1px solid rgba(124,199,255,.18); background:rgba(124,199,255,.05); border-radius:8px; padding:12px; }} .host-card h3 {{ grid-column:1/-1; margin:0 0 2px; display:flex; align-items:center; justify-content:space-between; gap:8px; }} .host-card .wide {{ grid-column:1/-1; }} .host-card label {{ display:grid; gap:5px; font-size:12px; color:var(--muted); }} .host-card input,.host-card textarea {{ width:100%; }} .host-card textarea {{ min-height:70px; }} .host-remove {{ background:#563044; color:#ffd8e2; }} @media(max-width:760px){{ .host-card{{grid-template-columns:1fr;}} .host-card .wide{{grid-column:auto;}} }}
 @media(max-width:980px){{ .nav-card{{order:-1;}} .tabs{{display:flex; overflow-x:auto; padding-bottom:2px;}} .tab{{white-space:nowrap; min-height:36px;}} .panel-head{{grid-template-columns:1fr;}} .panel-head .actions-row{{justify-content:flex-start;}} .status-grid{{grid-template-columns:1fr;}} }}
 @media(max-width:760px){{ .plan-item{{grid-template-columns:1fr;}} .floating-save{{position:static;margin-top:10px;}} }}
-.host-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px}}.host-title-switch{{display:flex;align-items:center;gap:12px;min-width:0;cursor:pointer}}.host-title-switch input{{position:absolute;opacity:0;pointer-events:none}}.host-title-switch span:last-child{{overflow-wrap:anywhere}}.host-card-head .switch-ui{{width:46px;height:25px;flex:0 0 auto}}
+.host-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px}}.host-title-switch{{display:flex;align-items:center;gap:12px;min-width:0;cursor:pointer}}.host-title-switch input{{position:absolute;opacity:0;pointer-events:none}}.host-title-switch input:checked ~ .switch-ui{{background:#256d95;border-color:#77c9ff}}.host-title-switch input:checked ~ .switch-ui::after{{left:24px;background:white}}.host-title-switch span:last-child{{overflow-wrap:anywhere}}.host-card-head .switch-ui{{width:46px;height:25px;flex:0 0 auto}}
 </style>
 </head>
 <body>
@@ -352,13 +372,6 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
       <label class="side-check"><input id="cleanOnControl" type="checkbox" checked><span>чистить старые генерации</span></label>
       <button id="clearGenBtn" class="ghost">Очистить cache</button>
     </div>
-    <div class="card player-card">
-      <div class="mini">Браузерный плеер</div>
-      <audio id="player" controls></audio>
-      <div class="player-buttons"><button id="playBtn" class="ghost">Слушать</button><button id="stopBtn" class="ghost">Сбросить</button></div>
-      <button id="resetLivePlayerBtn" class="ghost">Вернуться в live-поток</button>
-      <div class="toast" id="toast"></div>
-    </div>
   </aside>
   <main>
     <form id="cfgForm">
@@ -367,13 +380,21 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
       <section class="tab-panel" data-panel="plan"><div class="card"><h2 class="section-title">Предгенерация эфира</h2><p class="explain">Это отдельный режим: радио заранее подбирает треки, генерирует тексты, озвучивает ведущих, приветствия, новости и переходы. Ближе к концу блока оно готовит следующий блок и может перейти в live, если не успело.</p><div class="progress"><b>Статус плана:</b> <span class="showPlanStatusText">{esc(snap.get('show_plan_status',''))}</span><div class="bar"><div class="fill showPlanFillBar"></div></div><div class="mini showPlanDetailText"></div></div><div class="grid">{plan_settings}</div><div class="actions-row"><button type="button" id="showPlanGenBtn2">Сгенерировать подготовленный эфир</button><button type="button" id="showPlanUseBtn" class="secondary">Переключиться на плановый эфир</button><button type="button" id="liveModeBtn" class="secondary">Переключиться в Live</button><button type="button" id="prepareNextPlanBtn" class="secondary">Сгенерировать следующий план</button><button type="button" id="showPlanClearBtn2" class="secondary">Очистить план</button><button type="submit" class="secondary">Сохранить</button></div><h3>Программа эфира</h3><div id="planPreview" class="plan-preview"></div></div></section>
       <section class="tab-panel" data-panel="music"><div class="card"><h2 class="section-title">Музыка, факты и интернет-описания</h2><p class="explain">Кнопка описаний ищет открытые сведения через MusicBrainz/Wikipedia, затем LM Studio формулирует доброжелательный профиль: кто исполнитель, чем трек хорош для эфира, какой факт можно сказать, как красиво похвалить музыку без токсичных оценок.</p><div class="actions-row"><button type="button" id="trackProfileBtn2">🎧 Сгенерировать/обновить описания музыки</button><button type="button" id="rescanBtn2" class="secondary">Пересканировать музыку</button></div><div class="grid">{music_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки музыки</button></div></div></section>
       <section class="tab-panel" data-panel="live"><div class="card"><h2 class="section-title">Live-режим</h2><p class="explain">Live генерирует блоки по ходу эфира. Он быстрее, но менее продуман, чем предгенерация. Если план кончится, радио может перейти сюда.</p><div class="grid">{live_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки Live</button></div></div></section>
-      <section class="tab-panel" data-panel="hosts"><div class="card"><h2 class="section-title">Ведущие и гости</h2><p class="explain">Добавляй ведущих, меняй reference-голоса OmniVoice и настраивай гостя. Если reference-файла гостя нет, панель покажет предупреждение и будет использован стандартный/ближайший голос.</p><div class="grid">{hosts_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить ведущих и гостя</button></div></div></section>
+      <section class="tab-panel" data-panel="hosts"><div class="card"><h2 class="section-title">Ведущие и гости</h2><p class="explain">Добавляй ведущих, выбирай частых участников эфира и настраивай гостя-звонящего. Гость может звучать через OmniVoice design без собственного reference-файла.</p><div class="grid">{hosts_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить ведущих и гостя</button></div></div></section>
       <section class="tab-panel" data-panel="fun"><div class="card"><h2 class="section-title">Рубрики и игры</h2><p class="explain">Гороскопы, загадки и игра “ответь неправильно” могут работать и в Live, и в плановом эфире. Обычные разговоры ведущих не исчезают: рубрика либо совмещается с музыкальной подводкой, либо аккуратно вклинивается между обычными темами.</p><div class="progress"><b>Статус рубрик:</b> <span id="entertainmentStatus">{esc(snap.get('entertainment_status',''))}</span></div><div class="grid">{entertainment_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки рубрик</button></div></div></section>
       <section class="tab-panel" data-panel="voice"><div class="card"><h2 class="section-title">Голос, подложка и обработка</h2><p class="explain">Здесь регулируется слышимость ведущих относительно музыки. Если голос тихий — подними громкость голоса и/или LUFS. Подложка должна быть тихой: примерно -24…-18 dB.</p><div class="grid">{voice_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки голоса</button></div></div></section>
       <section class="tab-panel" data-panel="lm"><div class="card"><h2 class="section-title">LM Studio</h2><p class="explain">Для подготовленного эфира можно включать Thinking в LM Studio и не добавлять /no_think. Для live можно наоборот ускорить модель.</p><div class="grid">{lm_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки LM</button></div></div></section>
       <section class="tab-panel" data-panel="system"><div class="card"><h2 class="section-title">Система</h2><p class="explain">Пути, автозапуск, чистка старых файлов и базовые параметры стрима.</p><div class="grid">{system_settings}</div><div class="actions-row"><button type="submit">💾 Сохранить настройки</button></div></div></section>
     </form>
   </main>
+</div>
+<div class="player-card" id="playerDock">
+  <div class="mini">Плеер</div>
+  <audio id="player" controls></audio>
+  <div class="player-buttons"><button id="playBtn" type="button">Эфир</button><button id="stopBtn" type="button" class="ghost">Сбросить</button></div>
+  <button id="resetLivePlayerBtn" type="button" class="ghost">Live-поток</button>
+  <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">▾</button>
+  <div class="toast" id="toast"></div>
 </div>
 <script>
 const DEFAULTS = {defaults_json};
@@ -398,7 +419,7 @@ const DEPENDENCIES = {{
   horoscope_enabled:['entertainment_enabled'], horoscope_source_mode:['entertainment_enabled','horoscope_enabled'], horoscope_generate_before_radio:['entertainment_enabled','horoscope_enabled'], horoscope_chunk_min:['entertainment_enabled','horoscope_enabled'], horoscope_chunk_max:['entertainment_enabled','horoscope_enabled'], horoscope_blocks_before_riddle_min:['entertainment_enabled','horoscope_enabled','riddles_enabled'], horoscope_blocks_before_riddle_max:['entertainment_enabled','horoscope_enabled','riddles_enabled'],
   riddles_enabled:['entertainment_enabled'], riddle_source_mode:['entertainment_enabled','riddles_enabled'], riddle_min_blocks_between:['entertainment_enabled','riddles_enabled'], riddle_options_count:['entertainment_enabled','riddles_enabled'],
   wrong_answer_game_enabled:['entertainment_enabled'], wrong_answer_game_chance:['entertainment_enabled','wrong_answer_game_enabled'], wrong_answer_game_min_blocks_between:['entertainment_enabled','wrong_answer_game_enabled'],
-  guest_enabled:['entertainment_enabled'], guest_in_live:['entertainment_enabled','guest_enabled'], guest_in_planned:['entertainment_enabled','guest_enabled'], guest_generate_before_radio:['entertainment_enabled','guest_enabled'], guest_name:['entertainment_enabled','guest_enabled'], guest_role:['entertainment_enabled','guest_enabled'], guest_ref_audio:['entertainment_enabled','guest_enabled'], guest_ref_text:['entertainment_enabled','guest_enabled'], guest_chance:['entertainment_enabled','guest_enabled'], guest_min_blocks_between:['entertainment_enabled','guest_enabled'], guest_story_count:['entertainment_enabled','guest_enabled'],
+  guest_enabled:['entertainment_enabled'], guest_in_live:['entertainment_enabled','guest_enabled'], guest_in_planned:['entertainment_enabled','guest_enabled'], guest_generate_before_radio:['entertainment_enabled','guest_enabled'], guest_name:['entertainment_enabled','guest_enabled'], guest_role:['entertainment_enabled','guest_enabled'], guest_voice_mode:['entertainment_enabled','guest_enabled'], guest_voice_instruct:['entertainment_enabled','guest_enabled'], guest_ref_audio:['entertainment_enabled','guest_enabled'], guest_ref_text:['entertainment_enabled','guest_enabled'], guest_chance:['entertainment_enabled','guest_enabled'], guest_min_blocks_between:['entertainment_enabled','guest_enabled'], guest_story_count:['entertainment_enabled','guest_enabled'],
   station_id_dir:['station_id_enabled'], station_id_every_tracks:['station_id_enabled'], station_id_chance:['station_id_enabled'], station_id_volume:['station_id_enabled'], station_id_fallback_tts_enabled:['station_id_enabled'],
   speech_bed_mode:['speech_bed_enabled'], speech_bed_volume:['speech_bed_enabled'], speech_compressor_enabled:['speech_radio_processing_enabled'], speech_presence_eq_enabled:['speech_radio_processing_enabled'], speech_loudnorm_enabled:['speech_radio_processing_enabled'], speech_limiter_enabled:['speech_radio_processing_enabled'],
   track_profiles_web_lookup_provider:['track_profiles_web_lookup_enabled'], track_profiles_wikipedia_languages:['track_profiles_web_lookup_enabled','track_profiles_wikipedia_enabled'], track_profiles_wikipedia_cooldown_sec:['track_profiles_web_lookup_enabled','track_profiles_wikipedia_enabled'], track_profiles_wikidata_enabled:['track_profiles_web_lookup_enabled'], track_profiles_deezer_enabled:['track_profiles_web_lookup_enabled'], track_profiles_itunes_enabled:['track_profiles_web_lookup_enabled'],
@@ -410,12 +431,27 @@ let hostsData = [];
 try {{ hostsData = JSON.parse(document.getElementById('hostsJson')?.value || '[]'); }} catch(e) {{ hostsData = []; }}
 function escHtml(v) {{ return String(v ?? '').replace(/[&<>\"]/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c])); }}
 function serializeHosts() {{ const hidden=byId('hostsJson'); if (hidden) hidden.value = JSON.stringify(hostsData); }}
+function selectedFavoriteNames() {{ return (byId('hostFavoriteNames')?.value || '').split(',').map(x=>x.trim()).filter(Boolean); }}
+function serializeFavoriteHosts() {{
+  const hidden = byId('hostFavoriteNames'); if (!hidden) return;
+  hidden.value = [...document.querySelectorAll('.favorite-host-check:checked')].map(x=>x.value).join(', ');
+  refreshResetButtons();
+}}
+function renderFavoriteHosts() {{
+  const box = byId('favoriteHostsPicker'); if (!box) return;
+  const selected = new Set(selectedFavoriteNames().map(x=>x.toLowerCase()));
+  const names = hostsData.map(h => String(h?.name || '').trim()).filter(Boolean);
+  box.innerHTML = names.map(name => `<label><input type="checkbox" class="favorite-host-check" value="${{escHtml(name)}}" ${{selected.has(name.toLowerCase()) ? 'checked' : ''}}> ${{escHtml(name)}}</label>`).join('') || '<div class="mini">Сначала добавь ведущих выше.</div>';
+  box.querySelectorAll('.favorite-host-check').forEach(inp => inp.addEventListener('change', serializeFavoriteHosts));
+  serializeFavoriteHosts();
+}}
 function renderHostsEditor() {{
   const box=byId('hostsEditor'); if (!box) return; if (!Array.isArray(hostsData)) hostsData=[];
   box.innerHTML = hostsData.map((h,i)=>`<div class="host-card" data-host-index="${{i}}"><h3 class="host-card-head"><label class="host-title-switch"><input type="checkbox" data-host-field="enabled" ${{h.enabled === false ? '' : 'checked'}}><span class="switch-ui" aria-hidden="true"></span><span>Ведущий ${{i+1}}: ${{escHtml(h.name||'без имени')}}</span></label><button type="button" class="host-remove" data-i="${{i}}">Удалить</button></h3><label>Имя<input data-host-field="name" value="${{escHtml(h.name||'')}}"></label><label>Псевдонимы через запятую<input data-host-field="aliases" value="${{escHtml(Array.isArray(h.aliases)?h.aliases.join(', '):(h.aliases||''))}}"></label><label class="wide">Персона/стиль<textarea data-host-field="persona">${{escHtml(h.persona||'')}}</textarea></label><label>OmniVoice ref audio<input data-host-field="omnivoice_ref_audio" value="${{escHtml(h.omnivoice_ref_audio||'')}}"></label><label>OmniVoice ref text<input data-host-field="omnivoice_ref_text" value="${{escHtml(h.omnivoice_ref_text||'')}}"></label><label class="wide">OmniVoice instruct<textarea data-host-field="omnivoice_instruct">${{escHtml(h.omnivoice_instruct||'')}}</textarea></label><label>Шаги OmniVoice<input data-host-field="omnivoice_steps" value="${{escHtml(h.omnivoice_steps||'')}}"></label><label>Скорость OmniVoice<input data-host-field="omnivoice_speed" value="${{escHtml(h.omnivoice_speed||'')}}"></label></div>`).join('') || '<div class="mini">Ведущих пока нет. Нажми “Добавить ведущего”.</div>';
-  box.querySelectorAll('[data-host-field]').forEach(inp=>{{ const ev = inp.type === 'checkbox' ? 'change' : 'input'; inp.addEventListener(ev,()=>{{ const card=inp.closest('.host-card'); const i=Number(card.dataset.hostIndex); const f=inp.dataset.hostField; if (!hostsData[i]) return; if (f==='aliases') hostsData[i][f]=inp.value.split(',').map(x=>x.trim()).filter(Boolean); else if (f==='enabled') hostsData[i][f]=!!inp.checked; else hostsData[i][f]=inp.value; serializeHosts(); }}); }});
+  box.querySelectorAll('[data-host-field]').forEach(inp=>{{ const ev = inp.type === 'checkbox' ? 'change' : 'input'; inp.addEventListener(ev,()=>{{ const card=inp.closest('.host-card'); const i=Number(card.dataset.hostIndex); const f=inp.dataset.hostField; if (!hostsData[i]) return; if (f==='aliases') hostsData[i][f]=inp.value.split(',').map(x=>x.trim()).filter(Boolean); else if (f==='enabled') hostsData[i][f]=!!inp.checked; else hostsData[i][f]=inp.value; serializeHosts(); if (f === 'name') renderFavoriteHosts(); }}); }});
   box.querySelectorAll('.host-remove').forEach(btn=>btn.onclick=()=>{{ hostsData.splice(Number(btn.dataset.i),1); serializeHosts(); renderHostsEditor(); }});
   serializeHosts();
+  renderFavoriteHosts();
 }}
 document.querySelectorAll('input,select,textarea').forEach(el => {{ el.addEventListener('input', refreshResetButtons); el.addEventListener('change', refreshResetButtons); }});
 if (byId('addHostBtn')) byId('addHostBtn').onclick = () => {{ hostsData.push({{name:'Новый ведущий', enabled:true, aliases:[], persona:'живой радиоведущий', omnivoice_ref_audio:'', omnivoice_ref_text:'', omnivoice_instruct:''}}); renderHostsEditor(); }};
@@ -423,11 +459,28 @@ if (byId('resetHostsBtn')) byId('resetHostsBtn').onclick = () => {{ hostsData = 
 renderHostsEditor();
 refreshDependencyStates();
 document.querySelectorAll('.reset-key').forEach(btn => btn.onclick = async (e) => {{ e.preventDefault(); e.stopPropagation(); const key = btn.dataset.key; try {{ const j = await post('/api/config/reset_key', {{key}}); applyValue(key, j.value); refreshResetButtons(); await refresh(); say('Параметр сброшен: ' + key); }} catch(err) {{ say('Ошибка сброса: ' + err.message); }} }});
-if (byId('playBtn')) byId('playBtn').onclick = () => {{ if (!player.src) player.src = '/stream.mp3?client=panel&t=' + Date.now(); player.play(); }};
-if (byId('stopBtn')) byId('stopBtn').onclick = () => {{ player.pause(); player.removeAttribute('src'); player.load(); }};
+function refreshPlayerState() {{
+  const live = !!player && !player.paused && !player.ended && !!player.currentSrc;
+  const btn = byId('playBtn');
+  if (btn) {{
+    btn.classList.toggle('is-live', live);
+    btn.textContent = live ? 'Эфир' : 'Эфир';
+    btn.title = live ? 'Плеер подключен к эфиру' : 'Плеер не подключен к эфиру';
+  }}
+}}
+if (player) {{
+  ['play','pause','ended','emptied','error','loadeddata'].forEach(ev => player.addEventListener(ev, refreshPlayerState));
+}}
+if (byId('playBtn')) byId('playBtn').onclick = () => {{ if (!player.src) player.src = '/stream.mp3?client=panel&t=' + Date.now(); player.play().finally(refreshPlayerState); }};
+if (byId('stopBtn')) byId('stopBtn').onclick = () => {{ player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); }};
+if (byId('playerCollapseBtn')) byId('playerCollapseBtn').onclick = () => {{
+  const dock = byId('playerDock'); if (!dock) return;
+  dock.classList.toggle('is-collapsed');
+  byId('playerCollapseBtn').textContent = dock.classList.contains('is-collapsed') ? '▴' : '▾';
+}};
 if (byId('radioStartBtn')) byId('radioStartBtn').onclick = async () => {{ say('Запускаю радио...'); await post('/api/radio/start', {{clean: cleanFlag()}}); await refresh(); say('Радио включено'); }};
-if (byId('radioStopBtn')) byId('radioStopBtn').onclick = async () => {{ say('Останавливаю радио...'); await post('/api/radio/stop'); player.pause(); player.removeAttribute('src'); player.load(); await refresh(); say('Радио выключено'); }};
-if (byId('radioRestartBtn')) byId('radioRestartBtn').onclick = async () => {{ say('Перезапускаю радио...'); await post('/api/radio/restart', {{clean: cleanFlag()}}); player.pause(); player.removeAttribute('src'); player.load(); await refresh(); say('Радио перезапущено'); }};
+if (byId('radioStopBtn')) byId('radioStopBtn').onclick = async () => {{ say('Останавливаю радио...'); await post('/api/radio/stop'); player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); await refresh(); say('Радио выключено'); }};
+if (byId('radioRestartBtn')) byId('radioRestartBtn').onclick = async () => {{ say('Перезапускаю радио...'); await post('/api/radio/restart', {{clean: cleanFlag()}}); player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); await refresh(); say('Радио перезапущено'); }};
 if (byId('clearGenBtn')) byId('clearGenBtn').onclick = async () => {{ const j = await post('/api/clear_generated'); await refresh(); say(`Очищено: ${{j.files ?? 0}} файлов, ${{j.dirs ?? 0}} папок`); }};
 if (byId('skipBtn')) byId('skipBtn').onclick = async () => {{ await post('/api/skip'); say('Запрошен следующий трек'); }};
 async function rescan() {{ const j = await post('/api/rescan'); await refresh(); say(`Музыка пересканирована: ${{j.music_count ?? ''}} файлов`); }}
@@ -442,7 +495,7 @@ async function buildTrackProfiles() {{ const force = document.querySelector('[na
 ['showPlanUseBtn','modePlanBtn'].forEach(id => {{ const el = byId(id); if (el) el.onclick = useShowPlan; }});
 ['liveModeBtn','modeLiveBtn'].forEach(id => {{ const el = byId(id); if (el) el.onclick = liveMode; }});
 ['trackProfileBtn','trackProfileBtn2'].forEach(id => {{ const el = byId(id); if (el) el.onclick = buildTrackProfiles; }});
-if (byId('cfgForm')) byId('cfgForm').onsubmit = async (e) => {{ e.preventDefault(); serializeHosts(); say('Сохраняю настройки...'); const fd = new FormData(e.target); const r = await fetch('/api/save_config', {{method:'POST', body:new URLSearchParams(fd)}}); const j = await r.json().catch(()=>({{ok:false}})); refreshResetButtons(); await refresh(); say(j.ok === false ? 'Не удалось сохранить настройки' : 'Настройки сохранены'); }};
+if (byId('cfgForm')) byId('cfgForm').onsubmit = async (e) => {{ e.preventDefault(); serializeHosts(); serializeFavoriteHosts(); say('Сохраняю настройки...'); const fd = new FormData(e.target); const r = await fetch('/api/save_config', {{method:'POST', body:new URLSearchParams(fd)}}); const j = await r.json().catch(()=>({{ok:false}})); refreshResetButtons(); await refresh(); say(j.ok === false ? 'Не удалось сохранить настройки' : 'Настройки сохранены'); }};
 function renderPlanPreview(items) {{
   const box = byId('planPreview'); if (!box) return;
   if (!items || !items.length) {{ box.innerHTML = '<div class="mini">План ещё не сгенерирован. Нажми “Сгенерировать подготовленный эфир”.</div>'; return; }}
@@ -470,7 +523,7 @@ if (byId('resetLivePlayerBtn')) byId('resetLivePlayerBtn').onclick = () => {{
   if (!player) return;
   player.pause(); player.removeAttribute('src'); player.load();
   player.src='/stream.mp3?client=panel-live&t='+Date.now();
-  player.play();
+  player.play().finally(refreshPlayerState);
 }};
 const oldRefreshCompact = refresh;
 refresh = async function() {{
