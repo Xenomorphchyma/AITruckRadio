@@ -298,17 +298,29 @@ main {{ min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
 .controls .side-check {{ grid-column:1/-1; grid-row:4; }}
 .controls #clearGenBtn {{ grid-column:2; grid-row:3; }}
 .side-check {{ display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid rgba(255,255,255,.06); border-radius:8px; background:rgba(0,0,0,.16); font-size:12px; }} .side-check input {{ width:auto; flex:0 0 auto; }}
-.player-card {{ position:fixed; left:50%; bottom:14px; z-index:30; transform:translateX(-50%); width:min(860px,calc(100vw - 32px)); display:grid; grid-template-columns:auto minmax(320px,1fr) auto auto auto; gap:10px; align-items:center; padding:10px 12px; background:rgba(11,18,32,.97); backdrop-filter:blur(16px); border:1px solid rgba(124,199,255,.22); border-radius:12px; box-shadow:0 18px 48px rgba(0,0,0,.45); }}
-.player-card.is-collapsed {{ width:auto; grid-template-columns:auto auto auto; }}
-.player-card.is-collapsed audio,.player-card.is-collapsed #stopBtn,.player-card.is-collapsed .toast {{ display:none; }}
-.player-brand {{ display:flex; align-items:center; gap:9px; min-width:128px; font-weight:800; color:#eaf2ff; white-space:nowrap; }}
-.player-dot {{ width:9px; height:9px; border-radius:50%; background:#687388; box-shadow:0 0 0 4px rgba(104,115,136,.14); }}
-.player-card.is-live .player-dot {{ background:#f05252; box-shadow:0 0 0 4px rgba(240,82,82,.16),0 0 18px rgba(240,82,82,.45); }}
-.player-card button {{ min-height:36px; padding:8px 12px; font-size:12px; line-height:1.08; }}
-.player-card audio {{ width:100%; max-width:100%; height:34px; display:block; }}
-#playBtn {{ min-width:86px; background:#3a4254; color:#d8e2f5; border:1px solid #586176; }}
+.player-card {{ position:fixed; left:50%; bottom:16px; z-index:30; transform:translateX(-50%); width:min(940px,calc(100vw - 34px)); display:grid; grid-template-columns:minmax(170px,220px) minmax(260px,1fr) auto; gap:14px; align-items:center; padding:12px 14px; background:rgba(8,13,24,.97); backdrop-filter:blur(18px); border:1px solid rgba(124,199,255,.24); border-radius:14px; box-shadow:0 20px 54px rgba(0,0,0,.48); }}
+.player-card.is-collapsed {{ width:min(420px,calc(100vw - 34px)); grid-template-columns:minmax(150px,1fr) auto; }}
+.player-card.is-collapsed .player-meta,.player-card.is-collapsed .player-volume,.player-card.is-collapsed #stopBtn {{ display:none; }}
+.player-brand {{ display:grid; grid-template-columns:auto minmax(0,1fr); grid-template-rows:auto auto; column-gap:10px; align-items:center; min-width:0; }}
+.player-dot {{ grid-row:1/3; width:10px; height:10px; border-radius:50%; background:#687388; box-shadow:0 0 0 5px rgba(104,115,136,.14); }}
+.player-card.is-live .player-dot {{ background:#f05252; box-shadow:0 0 0 5px rgba(240,82,82,.16),0 0 22px rgba(240,82,82,.5); }}
+.player-name {{ font-weight:900; color:#f0f6ff; line-height:1.1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.player-state {{ color:var(--muted); font-size:11px; line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.player-meta {{ min-width:0; display:grid; gap:6px; }}
+.player-track {{ color:#e8f1ff; font-size:13px; font-weight:800; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.player-sub {{ color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.player-actions {{ display:flex; align-items:center; gap:8px; justify-content:flex-end; }}
+.player-card button {{ min-height:38px; padding:8px 12px; font-size:12px; line-height:1.08; }}
+.player-card audio {{ position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }}
+#playBtn {{ min-width:104px; background:#354057; color:#eaf2ff; border:1px solid #56627c; }}
 #playBtn.is-live {{ background:#d84545; color:#fff; border-color:#ff7b7b; }}
-#playerCollapseBtn {{ width:36px; padding:8px 0; border-radius:999px; }}
+#stopBtn {{ min-width:82px; }}
+.player-volume {{ display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; }}
+.player-volume input {{ width:92px; padding:0; accent-color:var(--accent); }}
+#playerCollapseBtn {{ width:38px; padding:8px 0; border-radius:999px; }}
+.toast-stack {{ position:fixed; top:72px; right:18px; z-index:60; width:min(360px,calc(100vw - 36px)); display:grid; gap:10px; pointer-events:none; }}
+.toast-item {{ pointer-events:auto; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:start; padding:11px 12px; border-radius:10px; background:rgba(12,20,36,.97); border:1px solid rgba(124,199,255,.24); box-shadow:0 16px 44px rgba(0,0,0,.34); color:#eaf2ff; font-size:12px; line-height:1.3; }}
+.toast-item button {{ width:24px; height:24px; min-height:24px; padding:0; border-radius:7px; background:rgba(255,255,255,.06); color:#b8c8e6; }}
 .nav-card {{ display:grid; gap:8px; }}
 .tabs {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; overflow:visible; flex:0 0 auto; }}
 .tab {{ display:flex; align-items:center; justify-content:flex-start; min-height:32px; padding:7px 8px; background:#101827; color:var(--text); border:1px solid var(--line); white-space:normal; text-align:left; line-height:1.1; font-size:12px; }}
@@ -398,19 +410,33 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
   </main>
 </div>
 <div class="player-card" id="playerDock">
-  <div class="player-brand"><span class="player-dot" aria-hidden="true"></span><span>Эфир</span></div>
-  <audio id="player" controls></audio>
-  <button id="playBtn" type="button">Эфир</button>
-  <button id="stopBtn" type="button" class="ghost">Сбросить</button>
-  <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">⌄</button>
-  <div class="toast" id="toast"></div>
+  <div class="player-brand"><span class="player-dot" aria-hidden="true"></span><span class="player-name">{esc(cfg.get('station_name','Волна FM'))}</span><span class="player-state" id="playerState">не подключено</span></div>
+  <div class="player-meta"><div class="player-track" id="playerTrack">{esc(snap.get('now_playing') or 'Радио остановлено')}</div><div class="player-sub" id="playerSub">локальный поток · {esc(snap.get('air_mode','Live'))}</div></div>
+  <div class="player-actions">
+    <audio id="player"></audio>
+    <button id="playBtn" type="button">Слушать</button>
+    <label class="player-volume" title="Громкость плеера">Громкость <input id="playerVolume" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <button id="stopBtn" type="button" class="ghost">Сбросить</button>
+    <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">⌄</button>
+  </div>
 </div>
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
 <script>
 const DEFAULTS = {defaults_json};
 const player = document.getElementById('player');
-const toast = document.getElementById('toast');
 function byId(id) {{ return document.getElementById(id); }}
-function say(t) {{ if (toast) toast.textContent = t || ''; }}
+function say(t) {{
+  if (!t) return;
+  const stack = byId('toastStack'); if (!stack) return;
+  const item = document.createElement('div');
+  item.className = 'toast-item';
+  item.innerHTML = `<span>${{String(t).replace(/[&<>]/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]))}}</span><button type="button" title="Закрыть">×</button>`;
+  item.querySelector('button').onclick = () => item.remove();
+  stack.prepend(item);
+  while (stack.children.length > 5) stack.lastElementChild.remove();
+  setTimeout(() => item.remove(), 5200);
+}}
+window.say = say;
 function setText(id, value) {{ const el = byId(id); if (el) el.textContent = value ?? ''; }}
 function setProgress(id, p) {{ const el = byId(id); if (el) el.style.width = Math.max(0, Math.min(100, Number(p)||0)) + '%'; }}
 async function post(url, data={{}}) {{ const r = await fetch(url, {{method:'POST', body:new URLSearchParams(data)}}); const j = await r.json().catch(() => ({{ok:false,error:'bad json'}})); if (!j.ok) throw new Error(j.error || 'команда не выполнена'); return j; }}
@@ -475,14 +501,20 @@ function refreshPlayerState() {{
   const btn = byId('playBtn');
   if (btn) {{
     btn.classList.toggle('is-live', live);
-    btn.textContent = live ? 'Эфир' : 'Эфир';
-    btn.title = live ? 'Плеер подключен к эфиру' : 'Плеер не подключен к эфиру';
+    btn.textContent = live ? 'Пауза' : 'Слушать';
+    btn.title = live ? 'Поставить локальный плеер на паузу' : 'Подключиться к локальному потоку';
   }}
+  setText('playerState', live ? 'подключено' : 'не подключено');
 }}
 if (player) {{
   ['play','pause','ended','emptied','error','loadeddata'].forEach(ev => player.addEventListener(ev, refreshPlayerState));
 }}
-if (byId('playBtn')) byId('playBtn').onclick = () => {{ if (!player.src) player.src = '/stream.mp3?client=panel&t=' + Date.now(); player.play().finally(refreshPlayerState); }};
+if (byId('playBtn')) byId('playBtn').onclick = () => {{
+  if (!player.src) player.src = '/stream.mp3?client=panel&t=' + Date.now();
+  if (!player.paused && !player.ended) player.pause(); else player.play().finally(refreshPlayerState);
+  refreshPlayerState();
+}};
+if (byId('playerVolume')) byId('playerVolume').oninput = (e) => {{ if (player) player.volume = Number(e.target.value) || 0; }};
 if (byId('stopBtn')) byId('stopBtn').onclick = () => {{ player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); }};
 if (byId('playerCollapseBtn')) byId('playerCollapseBtn').onclick = () => {{
   const dock = byId('playerDock'); if (!dock) return;
@@ -522,6 +554,7 @@ function renderPlanPreview(items) {{
 async function refresh() {{
   const r = await fetch('/status.json?ts=' + Date.now()); const s = await r.json();
   setText('now', s.now_playing || ''); setText('kind', s.current_kind || ''); setText('clients', s.active_clients); setText('musicCount', s.music_count); setText('timeText', s.time_text || ''); setText('airMode', s.air_mode || (s.show_plan_enabled ? 'Плановый' : 'Live'));
+  setText('playerTrack', s.now_playing || 'Радио остановлено'); setText('playerSub', 'локальный поток · ' + (s.air_mode || (s.show_plan_enabled ? 'Плановый' : 'Live')));
   setText('usedModel', s.used_lm_model || ''); setText('preparedStatus', s.prepared_status || ''); setText('showPlanStatus', s.show_plan_status || ''); document.querySelectorAll('.showPlanStatusText').forEach(el=>el.textContent=s.show_plan_status||''); setText('trackProfileStatus', s.track_profile_status || ''); setText('entertainmentStatus', s.entertainment_status || ''); setText('lastError', s.last_error || 'нет'); setText('hostText', s.last_host_text || 'пока нет');
   const pp = s.show_plan_progress || {{}}; const tp = s.track_profile_progress || {{}}; setProgress('showPlanFill', pp.percent || (s.show_plan_generating ? 18 : 0)); document.querySelectorAll('.showPlanFillBar').forEach(el=>el.style.width=Math.max(0,Math.min(100,Number(pp.percent || (s.show_plan_generating ? 18 : 0))||0))+'%'); setProgress('trackProfileFill', tp.percent || (s.track_profile_building ? 12 : 0)); setText('showPlanDetail', pp.detail || (s.show_plan_generating ? 'идёт подготовка...' : '')); document.querySelectorAll('.showPlanDetailText').forEach(el=>el.textContent=pp.detail || (s.show_plan_generating ? 'идёт подготовка...' : '')); setText('trackProfileDetail', tp.detail || (s.track_profile_building ? 'идёт анализ...' : '')); renderPlanPreview(s.show_plan_preview || []);
   const ff = byId('ffmpeg'); if (ff) {{ ff.textContent = s.ffmpeg_ok ? 'найден' : 'НЕ найден'; ff.className = s.ffmpeg_ok ? 'ok' : 'bad'; }} const fp = byId('ffprobe'); if (fp) {{ fp.textContent = s.ffprobe_ok ? 'найден' : 'не найден'; fp.className = s.ffprobe_ok ? 'ok' : 'warn'; }}

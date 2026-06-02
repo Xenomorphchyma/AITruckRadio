@@ -147,6 +147,36 @@ def track_profile_key_for_path(path: Path, base_dir: Optional[Path] = None) -> s
         return str(path).replace('\\', '/').lower()
 
 
+def _profile_key_from_item(item: Dict[str, Any]) -> str:
+    for key in ("file", "path", "file_name", "filename", "track_key", "source_file"):
+        val = str(item.get(key) or "").strip()
+        if val:
+            return val.replace("\\", "/").lower()
+    artist = str(item.get("artist") or "").strip()
+    title = str(item.get("title") or item.get("display_title") or "").strip()
+    if artist and title:
+        return f"{artist} - {title}".lower()
+    return title.lower()
+
+
+def _coerce_track_profiles(data: Any) -> Dict[str, Any]:
+    if isinstance(data, dict):
+        nested = data.get("tracks")
+        if isinstance(nested, (list, dict)):
+            return _coerce_track_profiles(nested)
+        return data
+    if isinstance(data, list):
+        out: Dict[str, Any] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            key = _profile_key_from_item(item)
+            if key:
+                out[key] = item
+        return out
+    return {}
+
+
 def load_track_profiles(cfg: Dict[str, Any]) -> Dict[str, Any]:
     raw_path = str(cfg.get('track_profiles_file', 'cache/track_profiles.json') or 'cache/track_profiles.json')
     path = Path(raw_path)
@@ -156,22 +186,64 @@ def load_track_profiles(cfg: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding='utf-8-sig'))
-        if isinstance(data, dict):
-            return data
+        return _coerce_track_profiles(data)
     except Exception as e:
         log(f'Не удалось прочитать профили треков {path}: {e}')
     return {}
 
 
+def _sanitize_profile_text(text: str) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    replacements = [
+        (r"(?i)\bдорожн(?:ый|ая|ое|ые|ого|ому|ым|ом|ой|ую)\s+эфир\b", "музыкальный эфир"),
+        (r"(?i)\bдорожн(?:ый|ая|ое|ые|ого|ому|ым|ом|ой|ую)\s+радио\b", "музыкальное радио"),
+        (r"(?i)\bв\s+дороге\b", "на фоне дня"),
+        (r"(?i)\bдля\s+дороги\b", "для эфира"),
+        (r"(?i)\bбез\s+кабин[а-яё]*\b", "без ролевых образов"),
+        (r"(?i)\bкабин[аеуы]?\b", "эфир"),
+        (r"(?i)\bгрузовик[ае]?\b", "эфир"),
+        (r"(?i)\bрейс[а-яё]*\b", "эфир"),
+        (r"(?i)\bтрасс[а-яё]*\b", "эфир"),
+        (r"(?i)\bEuro\s+Truck\s+Simulator\s*2?\b", "музыкальный эфир"),
+        (r"(?i)\bVR\b", "эфир"),
+    ]
+    for pat, repl in replacements:
+        text = re.sub(pat, repl, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def short_track_profile(track: Optional[Track], profiles: Dict[str, Any], music_dir: Path) -> str:
     if not track or not profiles:
         return ''
-    keys = [track_profile_key_for_path(track.path, music_dir), track_profile_key_for_path(track.path, None)]
+    keys = [
+        track_profile_key_for_path(track.path, music_dir),
+        track_profile_key_for_path(track.path, None),
+        track.path.name.lower(),
+        track.path.stem.lower(),
+        track.display_name.lower(),
+    ]
     item = None
     for k in keys:
         if k in profiles:
             item = profiles[k]
             break
+    if item is None:
+        display_l = track.display_name.lower()
+        stem_l = track.path.stem.lower()
+        for candidate in profiles.values():
+            if not isinstance(candidate, dict):
+                continue
+            names = [
+                str(candidate.get("display_title") or "").lower(),
+                str(candidate.get("source_display_name") or "").lower(),
+                str(candidate.get("title") or "").lower(),
+                str(candidate.get("short_title_for_tts") or "").lower(),
+            ]
+            if display_l in names or stem_l in names:
+                item = candidate
+                break
     if not isinstance(item, dict):
         return ''
     parts = []
@@ -184,17 +256,26 @@ def short_track_profile(track: Optional[Track], profiles: Dict[str, Any], music_
         parts.append('правило названия: в эфире используй русское написание из поля «название для эфира», не латинизацию из внешних баз')
     for label, key in [
         ('описание', 'description'),
+        ('описание', 'summary'),
+        ('описание', 'short_description'),
         ('исполнитель/контекст', 'artist_context'),
+        ('контекст трека', 'song_context'),
         ('факт из интернета', 'web_fact'),
+        ('интересный факт', 'interesting_fact'),
         ('настроение', 'mood'),
         ('темп/энергия', 'energy'),
         ('жанр/вайб', 'genre'),
         ('как подводить', 'radio_angle'),
         ('чего избегать', 'avoid'),
     ]:
-        val = str(item.get(key) or '').strip()
+        val = _sanitize_profile_text(str(item.get(key) or '').strip())
         if val:
             parts.append(f'{label}: {val}')
+    facts = item.get("facts")
+    if isinstance(facts, list):
+        fact_text = "; ".join(_sanitize_profile_text(str(x)) for x in facts[:3] if str(x).strip())
+        if fact_text:
+            parts.append(f"факты: {fact_text}")
     sources = item.get('sources')
     if isinstance(sources, list) and sources:
         src_text = ', '.join(str(x).strip() for x in sources[:3] if str(x).strip())
