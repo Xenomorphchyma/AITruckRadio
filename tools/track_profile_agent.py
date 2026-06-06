@@ -26,6 +26,10 @@ SKIP_DOMAINS = {
     "search.yahoo.com",
     "mail.yahoo.com",
     "finance.yahoo.com",
+    "azlyrics.com",
+    "genius.com",
+    "lyricszoo.com",
+    "songlyrics.com",
 }
 
 
@@ -142,6 +146,14 @@ def _domain(url: str) -> str:
     return (urllib.parse.urlparse(url).hostname or "").lower().removeprefix("www.")
 
 
+def _canonical_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(urllib.parse.urldefrag(url)[0])
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = parsed.path.rstrip("/") or "/"
+    query = parsed.query if host not in {"en.wikipedia.org", "ru.wikipedia.org"} else ""
+    return urllib.parse.urlunparse(("https", host, path, "", query, ""))
+
+
 def _fetch(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
     req = urllib.request.Request(
         url,
@@ -169,7 +181,7 @@ def search_web(query: str, *, timeout: int = 15, limit: int = 8) -> List[Dict[st
         domain = _domain(url)
         if not domain or domain in SKIP_DOMAINS or any(domain.endswith("." + x) for x in SKIP_DOMAINS):
             continue
-        clean_url = urllib.parse.urldefrag(url)[0]
+        clean_url = _canonical_url(url)
         if clean_url in seen or not _public_web_url(clean_url):
             continue
         seen.add(clean_url)
@@ -253,7 +265,9 @@ def plan_queries(
         queries = [str(x).strip() for x in obj.get("queries", []) if str(x).strip()]
     except Exception:
         queries = []
-    queries.extend(fallback)
+    # Exact filename-derived queries must win over a weak model that may
+    # misspell the artist or title and consume the whole query budget.
+    queries = fallback + queries
     out: List[str] = []
     seen = set()
     for query in queries:
@@ -277,7 +291,18 @@ def _relevance_score(item: Dict[str, str], artist: str, title: str) -> int:
         score += 3
     if any(x in hay for x in ("lyrics", "текст песни", "movie", "film", "game", "игра")):
         score -= 5
+    if any(x in hay for x in ("rugby", "football", "soccer", "politician", "actor", "athlete")):
+        score -= 12
     return score
+
+
+def _page_match_flags(page: Dict[str, str], artist: str, title: str) -> Dict[str, bool]:
+    hay = f"{page.get('title', '')} {page.get('text', '')}".casefold()
+    artist_words = [x for x in re.findall(r"[\w']+", artist.casefold()) if len(x) > 2]
+    title_words = [x for x in re.findall(r"[\w']+", title.casefold()) if len(x) > 2]
+    artist_match = bool(artist_words) and all(word in hay for word in artist_words[:3])
+    title_match = bool(title_words) and all(word in hay for word in title_words)
+    return {"artist_match": artist_match, "track_match": artist_match and title_match}
 
 
 def research_track(
@@ -314,6 +339,9 @@ def research_track(
                 continue
             page["query"] = item.get("query", "")
             page["search_title"] = item.get("title", "")
+            page.update(_page_match_flags(page, artist, title))
+            if not page["artist_match"]:
+                continue
             pages.append(page)
             print(f"[TrackProfiles] read page: {page['url']}", flush=True)
         except Exception as exc:

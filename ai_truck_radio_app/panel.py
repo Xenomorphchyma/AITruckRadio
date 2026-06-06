@@ -164,6 +164,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         input_num("track_profiles_agent_max_queries", "Поисковых запросов на трек", "Агент сам формулирует запросы. Обычно достаточно 3–4.", "1", "8"),
         input_num("track_profiles_agent_max_pages", "Прочитать страниц на трек", "Больше страниц повышает шанс проверки фактов, но заметно замедляет обработку.", "1", "8"),
         input_num("track_profiles_agent_page_chars", "Текста с одной страницы", "Максимальный объём очищенного текста страницы, передаваемый локальной модели.", "1500", "20000", "500"),
+        input_num("track_profiles_agent_total_evidence_chars", "Общий текст исследования", "Общий лимит материалов всех страниц для одного запроса к небольшой локальной модели.", "2000", "30000", "500"),
         input_num("track_profiles_agent_page_timeout_sec", "Таймаут страницы, сек", "Сколько ждать загрузки одной найденной страницы.", "5", "60"),
         checkbox("track_profiles_wikipedia_enabled", "Wikipedia для фактов", "Берёт краткие открытые сведения об исполнителе/треке, если нашло подходящую страницу."),
         input_text("track_profiles_wikipedia_languages", "Языки Wikipedia", "Через запятую: ru,en,uk,de. Скрипт пробует по порядку и не долбит один язык бесконечно."),

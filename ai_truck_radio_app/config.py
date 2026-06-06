@@ -304,8 +304,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "track_profiles_agent_max_queries": 4,
     "track_profiles_agent_max_pages": 4,
     "track_profiles_agent_page_chars": 9000,
+    "track_profiles_agent_total_evidence_chars": 8000,
     "track_profiles_agent_page_timeout_sec": 15,
-    "track_profiles_agent_max_tokens": 1800,
+    "track_profiles_agent_max_tokens": 1000,
     "track_profiles_progress_file": "cache/track_profiles_progress.json",
     "track_profiles_fact_mode": "web_then_lm",  # web_then_lm | safe_lm_only
     "track_profiles_wikipedia_enabled": True,
@@ -638,8 +639,9 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("track_profiles_agent_max_queries", 4)
     cfg.setdefault("track_profiles_agent_max_pages", 4)
     cfg.setdefault("track_profiles_agent_page_chars", 9000)
+    cfg.setdefault("track_profiles_agent_total_evidence_chars", 8000)
     cfg.setdefault("track_profiles_agent_page_timeout_sec", 15)
-    cfg.setdefault("track_profiles_agent_max_tokens", 1800)
+    cfg.setdefault("track_profiles_agent_max_tokens", 1000)
     if str(cfg.get("track_profiles_research_mode") or "").strip().lower() == "web_agent":
         if str(cfg.get("track_profiles_web_lookup_provider") or "").strip().lower() in {
             "",

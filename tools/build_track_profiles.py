@@ -126,8 +126,12 @@ def http_json(url: str, *, headers: Dict[str,str] | None = None, timeout: int = 
 def request_json(method: str, url: str, payload: Dict[str,Any], timeout: int=90) -> Dict[str,Any]:
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode('utf-8', errors='replace')[:2000]
+        raise RuntimeError(f'HTTP {exc.code} from {url}: {body or exc.reason}') from exc
 
 
 def model_text(
@@ -530,18 +534,56 @@ PROFILE_TEXT_FIELDS = [
 ]
 
 
-def _agent_evidence_text(research: Dict[str, Any]) -> str:
+def _agent_evidence_text(research: Dict[str, Any], max_chars: int = 8000) -> str:
     blocks = []
-    for index, page in enumerate(research.get('pages') or [], 1):
+    pages = [page for page in (research.get('pages') or []) if isinstance(page, dict)]
+    total_limit = max(1000, int(max_chars or 8000))
+    per_page = max(500, total_limit // max(1, len(pages)))
+    remaining = total_limit
+    for index, page in enumerate(pages, 1):
         if not isinstance(page, dict):
             continue
-        blocks.append(
+        prefix = (
             f'[SOURCE {index}]\n'
             f'URL: {page.get("url", "")}\n'
             f'TITLE: {page.get("title") or page.get("search_title") or ""}\n'
-            f'TEXT:\n{page.get("text", "")}'
+            f'TYPE: {"TRACK" if page.get("track_match") else "ARTIST"}\n'
+            'TEXT:\n'
         )
+        if remaining <= len(prefix) + 200:
+            break
+        page_text = str(page.get("text") or "")[: min(per_page, max(0, remaining - len(prefix)))]
+        block = prefix + page_text
+        blocks.append(block)
+        remaining -= len(block)
     return '\n\n'.join(blocks)
+
+
+def _remove_time_of_day_framing(text: str) -> str:
+    text = str(text or '').strip()
+    if not text:
+        return ''
+    bad = re.compile(
+        r'(?i)\b(?:утренн\w*|дневн\w*|вечерн\w*|ночн\w*|'
+        r'после\s+рабочего\s+дня|к\s+концу\s+дня|время\s+суток)\b'
+    )
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    kept = [sentence.strip() for sentence in sentences if sentence.strip() and not bad.search(sentence)]
+    cleaned = ' '.join(kept).strip()
+    return cleaned if cleaned else re.sub(bad, '', text).strip(' ,;:-')
+
+
+def _remove_game_framing(text: str) -> str:
+    text = str(text or '').strip()
+    if not text:
+        return ''
+    bad = re.compile(
+        r'(?i)\b(?:игр\w*|саундтрек\w*|no\s*man[’\']?s\s+sky|'
+        r'euro\s+truck\s+simulator|vr|кабин\w*|грузовик\w*)\b'
+    )
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    kept = [sentence.strip() for sentence in sentences if sentence.strip() and not bad.search(sentence)]
+    return ' '.join(kept).strip()
 
 
 def _agent_profile_prompt(artist: str, title: str, file_name: str, evidence: str) -> str:
@@ -578,6 +620,8 @@ def _agent_profile_prompt(artist: str, title: str, file_name: str, evidence: str
 - artist_context, song_context, creator_fact, song_fact и interesting_fact — максимум одно короткое предложение каждое.
 - description — максимум два коротких предложения; web_fact — максимум два коротких предложения.
 - Убирай справочные подробности, которые неудобно или неинтересно произносить в эфире.
+- song_context, song_fact и interesting_fact разрешены только по SOURCE с TYPE: TRACK.
+- SOURCE с TYPE: ARTIST можно использовать только для artist_context и creator_fact.
 - Описание звучания, mood, energy и genre формулируй осторожно. Если страницы не описывают звук, не выдавай догадку за факт.
 - Не привязывай подводку к утру, вечеру, дороге, машине, игре или конкретному состоянию слушателя.
 - Не унижай музыку и не пиши рекламными штампами.
@@ -616,14 +660,43 @@ def _normalize_agent_profile(
     out: Dict[str, Any] = {}
     for key in PROFILE_TEXT_FIELDS:
         out[key] = str(obj.get(key) or '').strip()[:1200]
-    out['artist'] = out['artist'] or artist
-    out['title'] = out['title'] or title or Path(file_name).stem
-    out['source_display_name'] = out['source_display_name'] or source_display
-    out['display_title'] = out['display_title'] or out['source_display_name']
-    out['short_title_for_tts'] = out['short_title_for_tts'] or out['title']
+    # Identity comes from the local file parser. Small models often decorate or
+    # corrupt names (Dançin/Krönö/65daysofsstatic), which is unacceptable for TTS.
+    out['artist'] = artist
+    out['title'] = title or Path(file_name).stem
+    out['source_display_name'] = source_display
+    out['display_title'] = source_display
+    out['short_title_for_tts'] = out['title']
+    for key in [
+        'description',
+        'artist_context',
+        'song_context',
+        'creator_fact',
+        'song_fact',
+        'web_fact',
+        'interesting_fact',
+        'mood',
+        'energy',
+        'genre',
+        'radio_angle',
+    ]:
+        out[key] = _remove_time_of_day_framing(out.get(key, ''))
+    out['description'] = _remove_game_framing(out.get('description', ''))
+    out['radio_angle'] = _remove_game_framing(out.get('radio_angle', ''))
+    used_track_sources = [
+        source_id
+        for source_id in used_ids
+        if bool(pages[source_id - 1].get('track_match'))
+    ]
+    if not used_track_sources:
+        out['song_context'] = ''
+        out['song_fact'] = ''
+        out['web_fact'] = ''
+        out['interesting_fact'] = ''
     out['description'] = out['description'] or (
         f'{out["display_title"]}: профиль построен по имени файла; подтверждённого описания звучания пока нет.'
     )
+    out['radio_angle'] = out['radio_angle'] or 'Коротко представить трек без привязки к времени суток.'
     out['avoid'] = (
         out['avoid']
         + ' Не придумывать историю создания и не подменять музыку одноимённым фильмом, игрой, каналом или мемом.'
@@ -631,7 +704,7 @@ def _normalize_agent_profile(
     out['sources'] = [str(pages[index - 1].get('url') or '') for index in used_ids]
     out['research_status'] = 'verified' if len(used_ids) >= 2 else ('partial' if used_ids else 'unverified')
     out['_cleanup_meta'] = {
-        'schema_version': 'radio_track_profile_v2',
+        'schema_version': 'radio_track_profile',
         'removed_time_mood_refs': True,
         'tts_title_goal': 'короткое, легко читаемое название для ведущего',
     }
@@ -641,6 +714,8 @@ def _normalize_agent_profile(
             {
                 'title': page.get('title') or page.get('search_title') or '',
                 'url': page.get('url') or '',
+                'artist_match': bool(page.get('artist_match')),
+                'track_match': bool(page.get('track_match')),
                 'excerpt': str(page.get('text') or '')[:1200],
             }
             for page in pages
@@ -662,7 +737,10 @@ def analyze_track_with_agent(cfg: Dict[str, Any], artist: str, title: str, file_
         return model_text(base, model, messages, max_tokens, temperature, timeout)
 
     research = research_track(artist, title, ask_model, cfg)
-    evidence = _agent_evidence_text(research)
+    evidence = _agent_evidence_text(
+        research,
+        int(cfg.get('track_profiles_agent_total_evidence_chars', 8000) or 8000),
+    )
     draft_text = ask_model(
         [
             {
@@ -674,7 +752,7 @@ def analyze_track_with_agent(cfg: Dict[str, Any], artist: str, title: str, file_
             },
             {'role': 'user', 'content': _agent_profile_prompt(artist, title, file_name, evidence)},
         ],
-        int(cfg.get('track_profiles_agent_max_tokens', 1800) or 1800),
+        int(cfg.get('track_profiles_agent_max_tokens', 1000) or 1000),
         0.15,
     )
     draft = json_from_model_text(draft_text)
@@ -700,7 +778,7 @@ SOURCE:
                     },
                     {'role': 'user', 'content': verification_prompt},
                 ],
-                int(cfg.get('track_profiles_agent_max_tokens', 1800) or 1800),
+                int(cfg.get('track_profiles_agent_max_tokens', 1000) or 1000),
                 0.05,
             )
         )
@@ -823,7 +901,7 @@ web_meta: {web_text}
     out['research_status'] = 'partial' if sources else 'unverified'
     out['sources'] = sources
     out['_cleanup_meta'] = {
-        'schema_version': 'radio_track_profile_v2',
+        'schema_version': 'radio_track_profile',
         'removed_time_mood_refs': True,
         'tts_title_goal': 'короткое, легко читаемое название для ведущего',
     }
@@ -921,7 +999,7 @@ def main() -> int:
                 'research_status': 'unverified',
                 'sources': [],
                 '_cleanup_meta': {
-                    'schema_version': 'radio_track_profile_v2',
+                    'schema_version': 'radio_track_profile',
                     'removed_time_mood_refs': True,
                     'tts_title_goal': 'короткое, легко читаемое название для ведущего',
                 },
