@@ -4,6 +4,8 @@ import json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from track_profile_agent import research_track
+
 ROOT = Path(__file__).resolve().parents[1]
 MUSICBRAINZ_DISABLED_UNTIL = 0.0
 MUSICBRAINZ_ERROR_COUNT = 0
@@ -126,6 +128,36 @@ def request_json(method: str, url: str, payload: Dict[str,Any], timeout: int=90)
     req = urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8'))
+
+
+def model_text(
+    base_url: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int,
+    temperature: float,
+    timeout: int,
+) -> str:
+    payload = {
+        'model': model,
+        'messages': messages,
+        'temperature': temperature,
+        'max_tokens': max_tokens,
+        'stream': False,
+    }
+    data = request_json('POST', base_url.rstrip('/') + '/chat/completions', payload, timeout=timeout)
+    return str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+
+
+def json_from_model_text(text: str) -> Dict[str, Any]:
+    text = str(text or '').replace('```json', '').replace('```', '').strip()
+    start, end = text.find('{'), text.rfind('}')
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
+    obj = json.loads(text)
+    if not isinstance(obj, dict):
+        raise ValueError('LM Studio returned JSON of the wrong type')
+    return obj
 
 
 def pick_model(base_url: str, wanted: str) -> str:
@@ -477,7 +509,218 @@ def lookup_itunes(cfg: Dict[str,Any], artist: str, title: str) -> Dict[str,Any]:
         return {}
 
 
+PROFILE_TEXT_FIELDS = [
+    'display_title',
+    'source_display_name',
+    'artist',
+    'title',
+    'short_title_for_tts',
+    'description',
+    'artist_context',
+    'song_context',
+    'creator_fact',
+    'song_fact',
+    'web_fact',
+    'interesting_fact',
+    'mood',
+    'energy',
+    'genre',
+    'radio_angle',
+    'avoid',
+]
+
+
+def _agent_evidence_text(research: Dict[str, Any]) -> str:
+    blocks = []
+    for index, page in enumerate(research.get('pages') or [], 1):
+        if not isinstance(page, dict):
+            continue
+        blocks.append(
+            f'[SOURCE {index}]\n'
+            f'URL: {page.get("url", "")}\n'
+            f'TITLE: {page.get("title") or page.get("search_title") or ""}\n'
+            f'TEXT:\n{page.get("text", "")}'
+        )
+    return '\n\n'.join(blocks)
+
+
+def _agent_profile_prompt(artist: str, title: str, file_name: str, evidence: str) -> str:
+    return f'''
+Создай профиль музыкального трека для ведущих радиостанции. Работай только по материалам SOURCE ниже.
+Не используй знания из памяти. Если факт не подтверждён текстом источника, оставь соответствующее поле пустым.
+Не путай песню с одноимённым фильмом, игрой, телеканалом, мемом или другим произведением.
+
+Верни строго один JSON без markdown. Схема:
+{{
+  "display_title": "Исполнитель — Название",
+  "source_display_name": "каноническое эфирное название",
+  "artist": "уточнённый исполнитель",
+  "title": "уточнённое название/версия",
+  "short_title_for_tts": "короткое произносимое название без служебного мусора",
+  "description": "1–2 предложения о звучании и сильных сторонах трека",
+  "artist_context": "краткий подтверждённый контекст исполнителя",
+  "song_context": "краткий подтверждённый контекст песни/альбома/релиза",
+  "creator_fact": "один подтверждённый факт об исполнителе",
+  "song_fact": "один подтверждённый факт о треке",
+  "web_fact": "Об исполнителе: ... О треке: ...",
+  "interesting_fact": "лучший безопасный факт для эфира",
+  "mood": "краткое настроение",
+  "energy": "краткая динамика/энергия",
+  "genre": "жанр или осторожно определённый музыкальный вайб",
+  "radio_angle": "как естественно подвести трек в эфире",
+  "avoid": "какие неподтверждённые утверждения и подмены нельзя допускать",
+  "used_source_ids": [1, 2]
+}}
+
+Правила:
+- `display_title`, `artist` и `title` можно уточнять по источникам, но не заменяй кириллицу файла латиницей без необходимости.
+- Не копируй предложения со страниц. Перескажи и ужми материал простым русским языком для радиоведущего.
+- artist_context, song_context, creator_fact, song_fact и interesting_fact — максимум одно короткое предложение каждое.
+- description — максимум два коротких предложения; web_fact — максимум два коротких предложения.
+- Убирай справочные подробности, которые неудобно или неинтересно произносить в эфире.
+- Описание звучания, mood, energy и genre формулируй осторожно. Если страницы не описывают звук, не выдавай догадку за факт.
+- Не привязывай подводку к утру, вечеру, дороге, машине, игре или конкретному состоянию слушателя.
+- Не унижай музыку и не пиши рекламными штампами.
+- `used_source_ids` содержит только номера реально использованных SOURCE.
+- Пустое подтверждёнными данными поле лучше выдуманного.
+
+Данные файла:
+artist: {artist or 'не указан'}
+title: {title or 'не указано'}
+file_name: {file_name}
+
+Материалы:
+{evidence or 'Надёжные страницы не прочитаны.'}
+'''.strip()
+
+
+def _normalize_agent_profile(
+    obj: Dict[str, Any],
+    *,
+    artist: str,
+    title: str,
+    file_name: str,
+    model: str,
+    research: Dict[str, Any],
+) -> Dict[str, Any]:
+    pages = [x for x in (research.get('pages') or []) if isinstance(x, dict)]
+    used_ids = []
+    for value in obj.get('used_source_ids') or []:
+        try:
+            source_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= source_id <= len(pages) and source_id not in used_ids:
+            used_ids.append(source_id)
+    source_display = (f'{artist} — {title}' if artist else title).strip(' —') or file_name
+    out: Dict[str, Any] = {}
+    for key in PROFILE_TEXT_FIELDS:
+        out[key] = str(obj.get(key) or '').strip()[:1200]
+    out['artist'] = out['artist'] or artist
+    out['title'] = out['title'] or title or Path(file_name).stem
+    out['source_display_name'] = out['source_display_name'] or source_display
+    out['display_title'] = out['display_title'] or out['source_display_name']
+    out['short_title_for_tts'] = out['short_title_for_tts'] or out['title']
+    out['description'] = out['description'] or (
+        f'{out["display_title"]}: профиль построен по имени файла; подтверждённого описания звучания пока нет.'
+    )
+    out['avoid'] = (
+        out['avoid']
+        + ' Не придумывать историю создания и не подменять музыку одноимённым фильмом, игрой, каналом или мемом.'
+    ).strip()[:1200]
+    out['sources'] = [str(pages[index - 1].get('url') or '') for index in used_ids]
+    out['research_status'] = 'verified' if len(used_ids) >= 2 else ('partial' if used_ids else 'unverified')
+    out['_cleanup_meta'] = {
+        'schema_version': 'radio_track_profile_v2',
+        'removed_time_mood_refs': True,
+        'tts_title_goal': 'короткое, легко читаемое название для ведущего',
+    }
+    out['_original_web_meta'] = {
+        'agent_queries': list(research.get('queries') or []),
+        'agent_pages': [
+            {
+                'title': page.get('title') or page.get('search_title') or '',
+                'url': page.get('url') or '',
+                'excerpt': str(page.get('text') or '')[:1200],
+            }
+            for page in pages
+        ],
+        'used_source_ids': used_ids,
+        'parsed_from_filename': {'artist': artist, 'title': title, 'file_name': file_name},
+    }
+    out['_model'] = model
+    out['_created_ts'] = int(time.time())
+    return out
+
+
+def analyze_track_with_agent(cfg: Dict[str, Any], artist: str, title: str, file_name: str) -> Dict[str, Any]:
+    base = str(cfg.get('lm_base_url', 'http://127.0.0.1:1234/v1')).rstrip('/')
+    model = pick_model(base, str(cfg.get('track_analyzer_model') or cfg.get('lm_model') or 'local-model'))
+    timeout = int(cfg.get('lm_timeout_sec', 90) or 90)
+
+    def ask_model(messages: List[Dict[str, str]], max_tokens: int, temperature: float) -> str:
+        return model_text(base, model, messages, max_tokens, temperature, timeout)
+
+    research = research_track(artist, title, ask_model, cfg)
+    evidence = _agent_evidence_text(research)
+    draft_text = ask_model(
+        [
+            {
+                'role': 'system',
+                'content': (
+                    'Ты исследователь музыкальной редакции. Извлекай сведения только из переданных страниц. '
+                    'Любое фактическое утверждение должно иметь источник.'
+                ),
+            },
+            {'role': 'user', 'content': _agent_profile_prompt(artist, title, file_name, evidence)},
+        ],
+        int(cfg.get('track_profiles_agent_max_tokens', 1800) or 1800),
+        0.15,
+    )
+    draft = json_from_model_text(draft_text)
+    verification_prompt = f'''
+Проверь черновик профиля по исходным SOURCE. Удали или смягчи каждый факт, которого нет в материалах.
+Сделай поля короткими и удобными для радиоведущего. Не копируй SOURCE дословно: перескажи и сожми.
+Исправь подмену одноимённых объектов. Сохрани ровно ту же JSON-схему, включая used_source_ids.
+Не добавляй знания из памяти. Верни только исправленный JSON.
+
+ЧЕРНОВИК:
+{json.dumps(draft, ensure_ascii=False, indent=2)}
+
+SOURCE:
+{evidence or 'Надёжные страницы не прочитаны.'}
+'''.strip()
+    try:
+        checked = json_from_model_text(
+            ask_model(
+                [
+                    {
+                        'role': 'system',
+                        'content': 'Ты строгий фактчекер. Оставляй только утверждения, подтверждённые SOURCE.',
+                    },
+                    {'role': 'user', 'content': verification_prompt},
+                ],
+                int(cfg.get('track_profiles_agent_max_tokens', 1800) or 1800),
+                0.05,
+            )
+        )
+    except Exception as exc:
+        print('[TrackProfiles] fact-check pass failed, using grounded draft:', repr(exc), flush=True)
+        checked = draft
+    return _normalize_agent_profile(
+        checked,
+        artist=artist,
+        title=title,
+        file_name=file_name,
+        model=model,
+        research=research,
+    )
+
+
 def analyze_track(cfg: Dict[str,Any], artist: str, title: str, file_name: str) -> Dict[str,Any]:
+    research_mode = str(cfg.get('track_profiles_research_mode', 'web_agent') or 'web_agent').strip().lower()
+    if research_mode == 'web_agent' and cfg.get('track_profiles_web_lookup_enabled', True):
+        return analyze_track_with_agent(cfg, artist, title, file_name)
     base = str(cfg.get('lm_base_url','http://127.0.0.1:1234/v1')).rstrip('/')
     model = pick_model(base, str(cfg.get('track_analyzer_model') or cfg.get('lm_model') or 'local-model'))
     mb = lookup_musicbrainz(cfg, artist, title)
@@ -540,7 +783,7 @@ web_meta: {web_text}
     if not out.get('description'):
         who = artist or 'исполнитель из имени файла'
         name = title or file_name
-        out['description'] = f'Трек {who} — {name}: доброжелательная дорожная подводка с акцентом на настроение и характер композиции.'[:600]
+        out['description'] = f'Трек {who} — {name}: доброжелательная музыкальная подводка с акцентом на настроение и характер композиции.'[:600]
     if artist and (not out.get('artist_context') or 'телеканал' in out.get('artist_context','').lower()):
         out['artist_context'] = f'По имени файла исполнитель/автор определяется как {artist}. Надёжных дополнительных фактов из интернета может не быть.'
     if has_cyrillic(title) or has_cyrillic(artist):
@@ -567,8 +810,24 @@ web_meta: {web_text}
         sources.append(str(deezer.get('link') or deezer.get('source') or 'Deezer'))
     if itunes:
         sources.append(str(itunes.get('url') or itunes.get('source') or 'iTunes Search'))
+    source_display = (f'{artist} — {title}' if artist else title).strip(' —') or file_name
+    out['display_title'] = source_display
+    out['source_display_name'] = source_display
+    out['artist'] = artist
+    out['title'] = title or Path(file_name).stem
+    out['short_title_for_tts'] = out['title']
+    out['song_context'] = out.get('web_fact', '')
+    out['creator_fact'] = out.get('artist_context', '')
+    out['song_fact'] = out.get('web_fact', '')
+    out['interesting_fact'] = out.get('web_fact', '')
+    out['research_status'] = 'partial' if sources else 'unverified'
     out['sources'] = sources
-    out['_web_meta'] = web_meta
+    out['_cleanup_meta'] = {
+        'schema_version': 'radio_track_profile_v2',
+        'removed_time_mood_refs': True,
+        'tts_title_goal': 'короткое, легко читаемое название для ведущего',
+    }
+    out['_original_web_meta'] = web_meta
     out['_model'] = model
     out['_created_ts'] = int(time.time())
     return out
@@ -600,13 +859,15 @@ def main() -> int:
         existing = profiles.get(key)
         if not force and isinstance(existing, dict) and (existing.get('description') or existing.get('radio_angle')):
             sources = existing.get('sources') if isinstance(existing.get('sources'), list) else []
-            web_meta = existing.get('_web_meta') if isinstance(existing.get('_web_meta'), dict) else {}
+            web_meta = existing.get('_original_web_meta') if isinstance(existing.get('_original_web_meta'), dict) else {}
+            if not web_meta and isinstance(existing.get('_web_meta'), dict):
+                web_meta = existing.get('_web_meta')
             has_wiki = bool((web_meta.get('wikipedia') or {}).get('url')) if isinstance(web_meta.get('wikipedia'), dict) else False
             has_wd = bool((web_meta.get('wikidata') or {}).get('url')) if isinstance(web_meta.get('wikidata'), dict) else False
             has_deezer = bool((web_meta.get('deezer') or {}).get('link')) if isinstance(web_meta.get('deezer'), dict) else False
             has_itunes = bool((web_meta.get('itunes') or {}).get('url')) if isinstance(web_meta.get('itunes'), dict) else False
             has_any_source = bool(sources or has_wiki or has_wd or has_deezer or has_itunes)
-            # Важный режим: если профиль уже имеет sources/_web_meta, не трогаем его только из-за
+            # Важный режим: если профиль уже имеет sources/_original_web_meta, не трогаем его только из-за
             # web_fact='нет надёжного факта'. Иначе оно повторно лезло в сеть на уже описанные треки.
             if enrich_missing:
                 if enrich_only_if_no_sources:
@@ -638,15 +899,35 @@ def main() -> int:
             done += 1
         except Exception as e:
             print('[TrackProfiles] failed:', key, repr(e), flush=True)
+            source_display = (f'{artist} — {title}' if artist else title).strip(' —') or p.name
             profiles[key] = {
+                'display_title': source_display,
+                'source_display_name': source_display,
+                'artist': artist,
+                'title': title or p.stem,
+                'short_title_for_tts': title or p.stem,
                 'description': f'Локальный трек: {artist + " — " if artist else ""}{title}. Надёжное интернет-описание не удалось получить, поэтому в эфире лучше говорить о настроении и энергии без фактов.',
                 'artist_context': artist and f'По имени файла исполнитель/автор: {artist}.' or '',
+                'song_context': '',
+                'creator_fact': '',
+                'song_fact': '',
                 'web_fact': 'нет надёжного факта',
+                'interesting_fact': '',
                 'mood': 'позитивно подать по настроению композиции',
                 'energy': 'оценивать мягко, без унижения трека',
                 'genre': 'не определено',
                 'radio_angle': 'подвести уважительно: отметить атмосферу, ритм или характер трека',
                 'avoid': 'не выдумывать историю и биографию; не подменять песню одноимённым телеканалом/фильмом/другим объектом',
+                'research_status': 'unverified',
+                'sources': [],
+                '_cleanup_meta': {
+                    'schema_version': 'radio_track_profile_v2',
+                    'removed_time_mood_refs': True,
+                    'tts_title_goal': 'короткое, легко читаемое название для ведущего',
+                },
+                '_original_web_meta': {
+                    'parsed_from_filename': {'artist': artist, 'title': title, 'file_name': p.name},
+                },
                 '_error': repr(e),
                 '_created_ts': int(time.time()),
             }

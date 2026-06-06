@@ -1869,7 +1869,7 @@ class RadioEngine:
         def worker() -> None:
             try:
                 force = bool(self.cfg.get("track_profiles_force_rebuild_existing", False) if force_existing is None else force_existing)
-                self.track_profile_status = ("пересобираю все интернет-описания треков через MusicBrainz/Wikipedia + LM Studio..." if force else "генерирую описания только для новых/неописанных треков...")
+                self.track_profile_status = ("пересобираю все профили: веб-поиск, чтение страниц и проверка через LM Studio..." if force else "исследую только новые/неописанные треки через веб-поиск и LM Studio...")
                 self.track_profile_progress = {"current": 0, "total": 0, "percent": 0, "detail": "запуск анализатора"}
                 log(self.track_profile_status)
                 script = BASE_DIR / "tools" / "build_track_profiles.py"

@@ -299,7 +299,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "track_profiles_auto_build": False,
     "track_profiles_force_rebuild_existing": False,
     "track_profiles_web_lookup_enabled": True,
-    "track_profiles_web_lookup_provider": "musicbrainz+wikipedia",
+    "track_profiles_web_lookup_provider": "web-search-pages",
+    "track_profiles_research_mode": "web_agent",  # web_agent | legacy_apis
+    "track_profiles_agent_max_queries": 4,
+    "track_profiles_agent_max_pages": 4,
+    "track_profiles_agent_page_chars": 9000,
+    "track_profiles_agent_page_timeout_sec": 15,
+    "track_profiles_agent_max_tokens": 1800,
     "track_profiles_progress_file": "cache/track_profiles_progress.json",
     "track_profiles_fact_mode": "web_then_lm",  # web_then_lm | safe_lm_only
     "track_profiles_wikipedia_enabled": True,
@@ -627,6 +633,21 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("track_profiles_deezer_enabled", True)
     cfg.setdefault("track_profiles_itunes_enabled", True)
     cfg.setdefault("track_profiles_enrich_only_if_no_sources", True)
+    cfg.setdefault("track_profiles_research_mode", "web_agent")
+    cfg.setdefault("track_profiles_web_lookup_provider", "web-search-pages")
+    cfg.setdefault("track_profiles_agent_max_queries", 4)
+    cfg.setdefault("track_profiles_agent_max_pages", 4)
+    cfg.setdefault("track_profiles_agent_page_chars", 9000)
+    cfg.setdefault("track_profiles_agent_page_timeout_sec", 15)
+    cfg.setdefault("track_profiles_agent_max_tokens", 1800)
+    if str(cfg.get("track_profiles_research_mode") or "").strip().lower() == "web_agent":
+        if str(cfg.get("track_profiles_web_lookup_provider") or "").strip().lower() in {
+            "",
+            "musicbrainz",
+            "musicbrainz+wikipedia",
+            "duckduckgo-pages",
+        }:
+            cfg["track_profiles_web_lookup_provider"] = "web-search-pages"
     cfg.setdefault("live_prepare_at_track_start_when_due", True)
     cfg.setdefault("live_prepare_trigger_fraction", 0.50)
     cfg.setdefault("live_prepare_trace_logs", True)
