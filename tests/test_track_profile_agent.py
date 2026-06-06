@@ -116,6 +116,21 @@ class TrackProfileAgentTests(unittest.TestCase):
         self.assertEqual(result["song_fact"], "")
         self.assertEqual(result["interesting_fact"], "")
 
+    def test_list_text_fields_are_joined_without_python_brackets(self) -> None:
+        result = profiles._normalize_agent_profile(
+            {
+                "avoid": ["Не выдумывать факты.", "Не путать исполнителя."],
+                "used_source_ids": [],
+            },
+            artist="Artist",
+            title="Track",
+            file_name="Artist - Track.mp3",
+            model="test-model",
+            research={"queries": [], "pages": []},
+        )
+        self.assertNotIn("[", result["avoid"])
+        self.assertIn("Не путать исполнителя.", result["avoid"])
+
 
 if __name__ == "__main__":
     unittest.main()

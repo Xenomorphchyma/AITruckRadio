@@ -141,6 +141,7 @@ def model_text(
     max_tokens: int,
     temperature: float,
     timeout: int,
+    structured_output: bool = False,
 ) -> str:
     payload = {
         'model': model,
@@ -149,8 +150,23 @@ def model_text(
         'max_tokens': max_tokens,
         'stream': False,
     }
+    if structured_output:
+        payload['response_format'] = {
+            'type': 'json_schema',
+            'json_schema': {
+                'name': 'radio_track_profile',
+                'strict': False,
+                'schema': {
+                    'type': 'object',
+                    'additionalProperties': True,
+                },
+            },
+        }
     data = request_json('POST', base_url.rstrip('/') + '/chat/completions', payload, timeout=timeout)
-    return str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+    message = ((data.get('choices') or [{}])[0].get('message') or {})
+    content = str(message.get('content') or '').strip()
+    reasoning = str(message.get('reasoning_content') or '').strip()
+    return content or reasoning
 
 
 def json_from_model_text(text: str) -> Dict[str, Any]:
@@ -534,6 +550,14 @@ PROFILE_TEXT_FIELDS = [
 ]
 
 
+def _profile_text_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ' '.join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ' '.join(f'{key}: {val}' for key, val in value.items() if str(val).strip())
+    return str(value or '').strip()
+
+
 def _agent_evidence_text(research: Dict[str, Any], max_chars: int = 8000) -> str:
     blocks = []
     pages = [page for page in (research.get('pages') or []) if isinstance(page, dict)]
@@ -659,7 +683,7 @@ def _normalize_agent_profile(
     source_display = (f'{artist} — {title}' if artist else title).strip(' —') or file_name
     out: Dict[str, Any] = {}
     for key in PROFILE_TEXT_FIELDS:
-        out[key] = str(obj.get(key) or '').strip()[:1200]
+        out[key] = _profile_text_value(obj.get(key))[:1200]
     # Identity comes from the local file parser. Small models often decorate or
     # corrupt names (Dançin/Krönö/65daysofsstatic), which is unacceptable for TTS.
     out['artist'] = artist
@@ -734,7 +758,22 @@ def analyze_track_with_agent(cfg: Dict[str, Any], artist: str, title: str, file_
     timeout = int(cfg.get('lm_timeout_sec', 90) or 90)
 
     def ask_model(messages: List[Dict[str, str]], max_tokens: int, temperature: float) -> str:
-        return model_text(base, model, messages, max_tokens, temperature, timeout)
+        prepared = [dict(message) for message in messages]
+        if bool(cfg.get('track_profiles_agent_append_no_think', True)) and prepared:
+            instruction = 'no_think. Output the final answer immediately without a long reasoning preamble.'
+            if prepared[0].get('role') == 'system':
+                prepared[0]['content'] = instruction + '\n' + str(prepared[0].get('content') or '')
+            else:
+                prepared.insert(0, {'role': 'system', 'content': instruction})
+        return model_text(
+            base,
+            model,
+            prepared,
+            max_tokens,
+            temperature,
+            timeout,
+            structured_output=bool(cfg.get('track_profiles_agent_structured_output', True)),
+        )
 
     research = research_track(artist, title, ask_model, cfg)
     evidence = _agent_evidence_text(
@@ -753,7 +792,7 @@ def analyze_track_with_agent(cfg: Dict[str, Any], artist: str, title: str, file_
             {'role': 'user', 'content': _agent_profile_prompt(artist, title, file_name, evidence)},
         ],
         int(cfg.get('track_profiles_agent_max_tokens', 1000) or 1000),
-        0.15,
+        float(cfg.get('track_profiles_agent_temperature', 0.15) or 0.15),
     )
     draft = json_from_model_text(draft_text)
     verification_prompt = f'''
@@ -769,6 +808,8 @@ SOURCE:
 {evidence or 'Надёжные страницы не прочитаны.'}
 '''.strip()
     try:
+        if not bool(cfg.get('track_profiles_agent_factcheck_enabled', True)):
+            raise LookupError('fact-check disabled')
         checked = json_from_model_text(
             ask_model(
                 [
@@ -782,6 +823,8 @@ SOURCE:
                 0.05,
             )
         )
+    except LookupError:
+        checked = draft
     except Exception as exc:
         print('[TrackProfiles] fact-check pass failed, using grounded draft:', repr(exc), flush=True)
         checked = draft

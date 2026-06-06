@@ -301,12 +301,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "track_profiles_web_lookup_enabled": True,
     "track_profiles_web_lookup_provider": "web-search-pages",
     "track_profiles_research_mode": "web_agent",  # web_agent | legacy_apis
+    "track_analyzer_model": "local-model",
     "track_profiles_agent_max_queries": 4,
+    "track_profiles_agent_search_results_per_query": 8,
     "track_profiles_agent_max_pages": 4,
+    "track_profiles_agent_min_page_chars": 250,
     "track_profiles_agent_page_chars": 9000,
     "track_profiles_agent_total_evidence_chars": 8000,
     "track_profiles_agent_page_timeout_sec": 15,
     "track_profiles_agent_max_tokens": 1000,
+    "track_profiles_agent_temperature": 0.15,
+    "track_profiles_agent_factcheck_enabled": True,
+    "track_profiles_agent_append_no_think": True,
+    "track_profiles_agent_structured_output": True,
     "track_profiles_progress_file": "cache/track_profiles_progress.json",
     "track_profiles_fact_mode": "web_then_lm",  # web_then_lm | safe_lm_only
     "track_profiles_wikipedia_enabled": True,
@@ -636,12 +643,19 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("track_profiles_enrich_only_if_no_sources", True)
     cfg.setdefault("track_profiles_research_mode", "web_agent")
     cfg.setdefault("track_profiles_web_lookup_provider", "web-search-pages")
+    cfg.setdefault("track_analyzer_model", "local-model")
     cfg.setdefault("track_profiles_agent_max_queries", 4)
+    cfg.setdefault("track_profiles_agent_search_results_per_query", 8)
     cfg.setdefault("track_profiles_agent_max_pages", 4)
+    cfg.setdefault("track_profiles_agent_min_page_chars", 250)
     cfg.setdefault("track_profiles_agent_page_chars", 9000)
     cfg.setdefault("track_profiles_agent_total_evidence_chars", 8000)
     cfg.setdefault("track_profiles_agent_page_timeout_sec", 15)
     cfg.setdefault("track_profiles_agent_max_tokens", 1000)
+    cfg.setdefault("track_profiles_agent_temperature", 0.15)
+    cfg.setdefault("track_profiles_agent_factcheck_enabled", True)
+    cfg.setdefault("track_profiles_agent_append_no_think", True)
+    cfg.setdefault("track_profiles_agent_structured_output", True)
     if str(cfg.get("track_profiles_research_mode") or "").strip().lower() == "web_agent":
         if str(cfg.get("track_profiles_web_lookup_provider") or "").strip().lower() in {
             "",

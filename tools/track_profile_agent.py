@@ -298,9 +298,43 @@ def _relevance_score(item: Dict[str, str], artist: str, title: str) -> int:
 
 def _page_match_flags(page: Dict[str, str], artist: str, title: str) -> Dict[str, bool]:
     hay = f"{page.get('title', '')} {page.get('text', '')}".casefold()
+    non_music = any(
+        marker in hay
+        for marker in (
+            "rugby",
+            "football",
+            "soccer",
+            "referee",
+            "basketball",
+            "politician",
+            "actor biography",
+            "athlete",
+        )
+    )
+    music_signal = any(
+        marker in hay
+        for marker in (
+            "music",
+            "song",
+            "track",
+            "album",
+            "single",
+            "remix",
+            "band",
+            "dj",
+            "producer",
+            "recording",
+            "музык",
+            "песн",
+            "трек",
+            "альбом",
+        )
+    )
     artist_words = [x for x in re.findall(r"[\w']+", artist.casefold()) if len(x) > 2]
     title_words = [x for x in re.findall(r"[\w']+", title.casefold()) if len(x) > 2]
     artist_match = bool(artist_words) and all(word in hay for word in artist_words[:3])
+    if non_music and not music_signal:
+        artist_match = False
     title_match = bool(title_words) and all(word in hay for word in title_words)
     return {"artist_match": artist_match, "track_match": artist_match and title_match}
 
@@ -313,14 +347,16 @@ def research_track(
 ) -> Dict[str, Any]:
     timeout = int(cfg.get("track_profiles_agent_page_timeout_sec", 15) or 15)
     max_queries = max(1, int(cfg.get("track_profiles_agent_max_queries", 4) or 4))
+    results_per_query = max(2, int(cfg.get("track_profiles_agent_search_results_per_query", 8) or 8))
     max_pages = max(1, int(cfg.get("track_profiles_agent_max_pages", 4) or 4))
+    min_page_chars = max(100, int(cfg.get("track_profiles_agent_min_page_chars", 250) or 250))
     max_chars = max(1500, int(cfg.get("track_profiles_agent_page_chars", 9000) or 9000))
     queries = plan_queries(artist, title, ask_model, max_queries=max_queries)
     candidates: List[Dict[str, str]] = []
     seen = set()
     for query in queries:
         try:
-            for item in search_web(query, timeout=timeout, limit=8):
+            for item in search_web(query, timeout=timeout, limit=results_per_query):
                 if item["url"] in seen:
                     continue
                 seen.add(item["url"])
@@ -335,7 +371,7 @@ def research_track(
             break
         try:
             page = read_web_page(item["url"], timeout=timeout, max_chars=max_chars)
-            if len(page["text"]) < 250:
+            if len(page["text"]) < min_page_chars:
                 continue
             page["query"] = item.get("query", "")
             page["search_title"] = item.get("title", "")

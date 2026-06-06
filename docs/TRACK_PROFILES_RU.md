@@ -26,12 +26,22 @@
 Основные настройки:
 
 - `track_profiles_research_mode`: `web_agent` или старый `legacy_apis`;
+- `track_analyzer_model`: отдельная модель LM Studio для описаний музыки;
 - `track_profiles_agent_max_queries`: число поисковых запросов на трек;
+- `track_profiles_agent_search_results_per_query`: число ссылок из выдачи на запрос;
 - `track_profiles_agent_max_pages`: число читаемых страниц;
+- `track_profiles_agent_min_page_chars`: минимальный размер полезной страницы;
 - `track_profiles_agent_page_chars`: лимит очищенного текста одной страницы;
 - `track_profiles_agent_total_evidence_chars`: общий лимит текста всех страниц для одного запроса;
-- `track_profiles_agent_page_timeout_sec`: таймаут загрузки страницы.
+- `track_profiles_agent_page_timeout_sec`: таймаут загрузки страницы;
+- `track_profiles_agent_max_tokens`: лимит ответа модели;
+- `track_profiles_agent_temperature`: температура исследователя;
+- `track_profiles_agent_factcheck_enabled`: отдельный второй проход проверки;
+- `track_profiles_agent_append_no_think`: экономит токены ответа у reasoning-моделей;
+- `track_profiles_agent_structured_output`: принудительно требует валидный JSON от LM Studio.
 
 Рекомендуется начинать с 3–4 запросов и 3–4 страниц. Полная пересборка большой библиотеки занимает заметное время, потому что на каждый трек выполняются поиск, чтение страниц, составление профиля и фактчекинг.
 
 Если веб-поиск недоступен, профиль всё равно создаётся по имени файла, но получает `research_status: unverified`. Ведущим нельзя выдавать такой профиль как источник исторических или биографических фактов.
+
+Фактическая связь исполнителя или трека с фильмом/игрой может храниться в `artist_context` или `song_context`, если её подтверждает подходящая страница. При этом `radio_angle` очищается от привязок к игре, кабине, дороге и времени суток: ведущий получает музыкальную подводку, а не ролевой сценарий.
