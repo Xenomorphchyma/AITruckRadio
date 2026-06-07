@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -25,14 +26,24 @@ class LMStudioClient:
         self.timeout = int(cfg.get("lm_timeout_sec", 25))
         self.model = str(cfg.get("lm_model") or "local-model")
 
-    def _request_json(self, method: str, url: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        payload: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
         data = None
         headers = {"Content-Type": "application/json"}
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            with urllib.request.urlopen(req, timeout=int(timeout or self.timeout)) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:1200]
+            raise RuntimeError(f"LM Studio HTTP {exc.code}: {detail}") from exc
         return json.loads(raw)
 
     def list_models(self) -> List[str]:
@@ -55,30 +66,57 @@ class LMStudioClient:
             return wanted
         return wanted
 
-    def generate_plain_text(self, prompt: str, *, system: str = "Ты пишешь готовый русский текст для радио.", temperature: Optional[float] = None, max_tokens: Optional[int] = None, timeout: Optional[int] = None) -> str:
-        model = self.pick_model()
-        old_timeout = self.timeout
-        if timeout:
-            self.timeout = int(timeout)
-        try:
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": float(self.cfg.get("lm_temperature", 0.78) if temperature is None else temperature),
-                "max_tokens": int(max_tokens or min(1200, int(self.cfg.get("lm_max_tokens", 760) or 760))),
-                "stream": False,
+    def generate_plain_text(
+        self,
+        prompt: str,
+        *,
+        system: str = "Ты пишешь готовый русский текст для радио.",
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
+        model: Optional[str] = None,
+        structured_output: bool = False,
+        response_schema: Optional[Dict[str, Any]] = None,
+        no_think: bool = False,
+    ) -> str:
+        selected_model = str(model or self.pick_model())
+        if selected_model == "local-model":
+            models = self.list_models()
+            selected_model = models[0] if models else selected_model
+        prepared_system = str(system or "")
+        if no_think:
+            prepared_system = "no_think. Output the final answer immediately without a long reasoning preamble.\n" + prepared_system
+        payload = {
+            "model": selected_model,
+            "messages": [
+                {"role": "system", "content": prepared_system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": float(self.cfg.get("lm_temperature", 0.78) if temperature is None else temperature),
+            "max_tokens": int(max_tokens or min(1200, int(self.cfg.get("lm_max_tokens", 760) or 760))),
+            "stream": False,
+        }
+        if structured_output:
+            schema = response_schema or {
+                "type": "object",
+                "properties": {"result": {"type": "string"}},
+                "required": ["result"],
+                "additionalProperties": False,
             }
-            data = self._request_json("POST", f"{self.base_url}/chat/completions", payload)
-            choices = data.get("choices") or []
-            if not choices:
-                return ""
-            msg = choices[0].get("message") or {}
-            return str(msg.get("content") or "").strip()
-        finally:
-            self.timeout = old_timeout
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "radio_generated_object",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+        data = self._request_json("POST", f"{self.base_url}/chat/completions", payload, timeout=timeout)
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        msg = choices[0].get("message") or {}
+        return str(msg.get("content") or msg.get("reasoning_content") or "").strip()
 
     def generate_host_line(self, previous_track: Optional[Track], next_track: Optional[Track], ctx: Dict[str, Any]) -> str:
         """Generate one host break.
@@ -185,6 +223,11 @@ class LMStudioClient:
                 extra_lines.append(f"Точный час: {ctx['exact_time_text']}")
             if ctx.get("weather_text"):
                 extra_lines.append(f"Погода: {ctx['weather_text']}")
+            if ctx.get("weather_city"):
+                extra_lines.append(
+                    f"Единственный город для погоды и местного контекста: {ctx['weather_city']}. "
+                    "Не заменяй его Москвой или другим городом и не добавляй город из памяти модели."
+                )
             if ctx.get("news_text"):
                 extra_lines.append(f"Новость станции: {ctx['news_text']}")
             if ctx.get("greeting_text"):

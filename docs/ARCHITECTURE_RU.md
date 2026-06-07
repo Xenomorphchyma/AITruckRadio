@@ -12,6 +12,9 @@
 - `ai_truck_radio_app/server.py` — HTTP API, `/stream.mp3`, `/status.json`, сохранение настроек из панели.
 - `ai_truck_radio_app/text_processing.py` — чистка текста, парсинг диалогов ведущих, защита от ремарок и контекстных ошибок.
 - `ai_truck_radio_app/tracks.py` — модели треков, парсинг имён файлов, сканирование музыки, профили треков, ffprobe duration.
+- `ai_truck_radio_app/entertainment_agent.py` — поиск, сборка и фактчек гороскопов, загадок и игровых вопросов.
+- `ai_truck_radio_app/entertainment_history.py` — постоянный журнал использованных рубрик и защита от повторов.
+- `ai_truck_radio_app/web_research.py` — общий безопасный поиск и чтение публичных HTML-страниц.
 - `ai_truck_radio_app/tts.py` — TTS orchestration, OmniVoice/Qwen workers, Piper/SAPI/fallback backend-и.
 
 Следующий разумный этап распила — разделить `RadioEngine` на эфирный цикл, плановый эфир и рубрики/игры.

@@ -195,6 +195,23 @@
   "wrong_answer_game_chance": 0.18,
   "wrong_answer_game_min_blocks_between": 4,
   "entertainment_generate_with_lm": true,
+  "entertainment_agent_enabled": true,
+  "entertainment_model": "local-model",
+  "entertainment_agent_results_per_query": 6,
+  "entertainment_agent_max_pages": 6,
+  "entertainment_agent_pages_per_topic": 2,
+  "entertainment_agent_min_page_chars": 300,
+  "entertainment_agent_page_chars": 6000,
+  "entertainment_agent_total_evidence_chars": 16000,
+  "entertainment_agent_page_timeout_sec": 15,
+  "entertainment_agent_max_tokens": 2400,
+  "entertainment_agent_temperature": 0.15,
+  "entertainment_agent_factcheck_enabled": true,
+  "entertainment_agent_no_think": true,
+  "entertainment_agent_structured_output": true,
+  "entertainment_history_file": "cache/entertainment_history.json",
+  "entertainment_history_max_items": 1000,
+  "entertainment_daily_cache_dir": "cache/entertainment",
   "entertainment_pack_timeout_sec": 150,
   "entertainment_pack_max_items": 12,
   "entertainment_status_in_panel": true,
@@ -325,11 +342,18 @@
   "host_active_count_min": 1,
   "host_active_count_max": 2,
   "host_duo_chance": 0.42,
+  "host_intro_count": 2,
+  "host_regular_count_min": 1,
+  "host_regular_count_max": 2,
+  "host_regular_multi_chance": 0.18,
   "host_solo_name": "Максим",
   "hosts": [
     {
       "name": "Максим",
       "enabled": true,
+      "intro_enabled": true,
+      "regular_enabled": true,
+      "air_weight": 1.0,
       "aliases": [
         "Макс"
       ],
@@ -355,6 +379,9 @@
     {
       "name": "Ирина",
       "enabled": true,
+      "intro_enabled": true,
+      "regular_enabled": true,
+      "air_weight": 0.2,
       "aliases": [
         "Лина",
         "Ира"

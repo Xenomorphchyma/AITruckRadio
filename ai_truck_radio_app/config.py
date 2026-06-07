@@ -238,6 +238,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "wrong_answer_game_min_blocks_between": 4,
 
     "entertainment_generate_with_lm": True,
+    "entertainment_agent_enabled": True,
+    "entertainment_model": "local-model",
+    "entertainment_agent_results_per_query": 6,
+    "entertainment_agent_max_pages": 6,
+    "entertainment_agent_pages_per_topic": 2,
+    "entertainment_agent_min_page_chars": 300,
+    "entertainment_agent_page_chars": 6000,
+    "entertainment_agent_total_evidence_chars": 16000,
+    "entertainment_agent_page_timeout_sec": 15,
+    "entertainment_agent_max_tokens": 2400,
+    "entertainment_agent_temperature": 0.15,
+    "entertainment_agent_factcheck_enabled": True,
+    "entertainment_agent_no_think": True,
+    "entertainment_agent_structured_output": True,
+    "entertainment_history_file": "cache/entertainment_history.json",
+    "entertainment_history_max_items": 1000,
+    "entertainment_daily_cache_dir": "cache/entertainment",
     "entertainment_pack_timeout_sec": 150,
     "entertainment_pack_max_items": 12,
     "entertainment_status_in_panel": True,
@@ -372,12 +389,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "host_active_count_min": 1,
     "host_active_count_max": 2,
     "host_duo_chance": 0.42,
+    "host_intro_count": 2,
+    "host_regular_count_min": 1,
+    "host_regular_count_max": 2,
+    "host_regular_multi_chance": 0.18,
     "host_duo_intro_in_mostly_solo": True,
     "host_solo_name": "Максим",
     "hosts": [
         {
             "name": "Максим",
             "enabled": True,
+            "intro_enabled": True,
+            "regular_enabled": True,
+            "air_weight": 1.0,
             "aliases": ["Макс"],
             "host_voice_profile_version": 5,
             "persona": "живой активный FM-ведущий: быстрые тёплые заходы, улыбка в голосе, энергия прямого эфира, короткие острые акценты, не сонный диктор и не аудиокнига",
@@ -401,6 +425,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         {
             "name": "Ирина",
             "enabled": True,
+            "intro_enabled": True,
+            "regular_enabled": True,
+            "air_weight": 0.2,
             "aliases": ["Лина", "Ира"],
             "host_voice_profile_version": 5,
             "persona": "живая активная FM-соведущая: светлая энергичная подача, улыбка в голосе, быстрые реакции, дружелюбный драйв, не сонная дикторская читка",
@@ -605,15 +632,19 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     for _k in [
         "entertainment_enabled", "entertainment_in_live", "entertainment_in_planned", "horoscope_enabled",
         "riddles_enabled", "wrong_answer_game_enabled", "entertainment_generate_with_lm",
+        "entertainment_agent_enabled", "entertainment_agent_factcheck_enabled",
+        "entertainment_agent_no_think", "entertainment_agent_structured_output",
         "horoscope_generate_before_radio", "entertainment_status_in_panel", "omnivoice_nonverbal_tags_enabled",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
-        "entertainment_integration_mode",
+        "entertainment_integration_mode", "entertainment_model", "entertainment_history_file",
+        "entertainment_daily_cache_dir",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
         "entertainment_chance", "wrong_answer_game_chance", "omnivoice_nonverbal_tags_chance",
+        "entertainment_agent_temperature",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
     for _k in [
@@ -621,6 +652,11 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "horoscope_blocks_before_riddle_min", "horoscope_blocks_before_riddle_max",
         "riddle_min_blocks_between", "riddle_options_count", "wrong_answer_game_min_blocks_between",
         "entertainment_pack_timeout_sec", "entertainment_pack_max_items", "max_host_text_chars",
+        "entertainment_agent_results_per_query", "entertainment_agent_max_pages",
+        "entertainment_agent_pages_per_topic", "entertainment_agent_min_page_chars",
+        "entertainment_agent_page_chars", "entertainment_agent_total_evidence_chars",
+        "entertainment_agent_page_timeout_sec", "entertainment_agent_max_tokens",
+        "entertainment_history_max_items",
     ]:
         cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
         cfg.setdefault("live_blocking_dj_when_due", True)

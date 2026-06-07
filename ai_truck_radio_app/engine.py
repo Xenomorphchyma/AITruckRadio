@@ -44,6 +44,8 @@ from ai_truck_radio_app.context import (
     read_news_line,
     style_prompt,
 )
+from ai_truck_radio_app.entertainment_agent import EntertainmentAgent
+from ai_truck_radio_app.entertainment_history import filter_unused, mark_used
 from ai_truck_radio_app.lmstudio import LMStudioClient
 from ai_truck_radio_app.server import make_ets2_line
 from ai_truck_radio_app.text_processing import (
@@ -54,6 +56,7 @@ from ai_truck_radio_app.text_processing import (
     postprocess_host_text_for_air,
     repair_time_context_text,
     sanitize_general_radio_text,
+    soften_tts_exclamations,
 )
 from ai_truck_radio_app.tracks import (
     PlannedItem,
@@ -86,6 +89,7 @@ class RadioEngine:
         self.played_since_dj = 0
         self.next_dj_after = self._random_dj_gap()
         self.lm = LMStudioClient(cfg)
+        self.entertainment_agent = EntertainmentAgent(cfg, self.lm)
         self.tts = TTS(cfg)
         self.weather = WeatherClient(cfg)
         self.track_profiles = load_track_profiles(cfg) if cfg.get("track_profiles_enabled", True) else {}
@@ -148,10 +152,38 @@ class RadioEngine:
 
         self.stop_event = threading.Event()
         self.skip_event = threading.Event()
+        self.startup_cancel_event = threading.Event()
         self.broadcast_thread: Optional[threading.Thread] = None
+        self.startup_thread: Optional[threading.Thread] = None
 
     def is_running(self) -> bool:
         return bool(self.broadcast_thread and self.broadcast_thread.is_alive() and not self.stop_event.is_set())
+
+    def is_starting(self) -> bool:
+        return bool(self.startup_thread and self.startup_thread.is_alive())
+
+    def start_async(self, clean_generated: Optional[bool] = None) -> bool:
+        if self.is_running() or self.is_starting():
+            return False
+        self.startup_cancel_event.clear()
+        with self.state_lock:
+            self.now_playing = "Эфир запускается"
+            self.current_kind = "startup"
+            self.current_started_ts = time.time()
+
+        def worker() -> None:
+            try:
+                self.start(clean_generated=clean_generated)
+            except Exception as e:
+                self.set_error(f"Не удалось запустить радио: {e}")
+                with self.state_lock:
+                    self.now_playing = "Ошибка запуска радио"
+                    self.current_kind = "stopped"
+                log(f"Фоновый запуск радио завершился ошибкой: {e}")
+
+        self.startup_thread = threading.Thread(target=worker, name="RadioStartup", daemon=True)
+        self.startup_thread.start()
+        return True
 
     def cleanup_generated_radio_files(self) -> Dict[str, int]:
         """Delete generated speech/planned-show leftovers, but keep user assets and track profiles."""
@@ -239,18 +271,25 @@ class RadioEngine:
             stats = self.cleanup_generated_radio_files()
             log(f"Старые сгенерированные файлы очищены: {stats['files']} файлов, {stats['dirs']} папок")
         self.lm = LMStudioClient(self.cfg)
+        self.entertainment_agent = EntertainmentAgent(self.cfg, self.lm)
         self.weather = WeatherClient(self.cfg)
         self.track_profiles = load_track_profiles(self.cfg) if self.cfg.get("track_profiles_enabled", True) else {}
         try:
             self.tts.prewarm_omnivoice_worker(self.cfg.get("hosts") or [])
         except Exception as e:
             log(f"OmniVoice prewarm пропущен: {e}")
+        if self.startup_cancel_event.is_set():
+            log("Запуск радио отменён во время подготовки OmniVoice")
+            return
         if self.cfg.get("entertainment_enabled", False) and self.cfg.get("horoscope_generate_before_radio", True):
             try:
                 self.prepare_entertainment_pack("radio_start")
                 log("Рубрики перед эфиром готовы: " + self.entertainment_status)
             except Exception as e:
                 log(f"Не удалось подготовить рубрики перед эфиром: {e}")
+        if self.startup_cancel_event.is_set():
+            log("Запуск радио отменён во время подготовки рубрик")
+            return
         self.stop_event.clear()
         self.skip_event.clear()
         self._reset_runtime_state_for_new_air()
@@ -258,6 +297,7 @@ class RadioEngine:
         self.broadcast_thread.start()
 
     def stop(self) -> None:
+        self.startup_cancel_event.set()
         self.stop_event.set()
         self.skip_event.set()
         self._broadcast(None)
@@ -385,67 +425,39 @@ class RadioEngine:
         return (self.played_since_dj + 1) >= self.next_dj_after
 
     def _select_hosts_for_insert(self, intro_allowed: bool = False) -> Tuple[List[Dict[str, Any]], bool]:
-        """Choose active hosts for the next break.
-
-        The old project had a fixed 1/2-host switch. Now hosts can be added in the
-        panel, disabled, and weighted. We still keep the result small for radio:
-        usually 1 speaker, sometimes 2-3 when requested by mode/settings.
-        """
+        """Choose hosts by block type and per-host participation weight."""
         all_hosts = [h for h in (self.cfg.get("hosts") or []) if isinstance(h, dict) and str(h.get("name", "")).strip()]
         hosts = [h for h in all_hosts if h.get("enabled", True) is not False]
         if not hosts:
             hosts = all_hosts[:]
         if not hosts:
             return [], False
-        legacy_two = bool(self.cfg.get("two_hosts_enabled", True))
-        mode = str(self.cfg.get("host_mode") or ("mostly_solo" if legacy_two else "always_solo")).strip().lower()
-        if mode not in {"always_solo", "always_duo", "mostly_solo", "smart_multi"}:
-            mode = "mostly_solo" if legacy_two else "always_solo"
 
-        def name_of(h: Dict[str, Any]) -> str:
-            return str(h.get("name", "")).strip()
+        pool_key = "intro_enabled" if intro_allowed else "regular_enabled"
+        pool = [h for h in hosts if h.get(pool_key, True) is not False] or hosts
 
-        fav_raw = str(self.cfg.get("host_favorite_names", "") or "")
-        fav_names = [x.strip().lower() for x in re.split(r"[,;]", fav_raw) if x.strip()]
-        fav_hosts = [h for h in hosts if name_of(h).lower() in fav_names]
-        if not fav_hosts:
-            fav_hosts = hosts[:2]
-        fav_chance = clamp(float(self.cfg.get("host_favorite_chance", 0.75) or 0.75), 0.0, 1.0)
-        solo_name = str(self.cfg.get("host_solo_name") or name_of(hosts[0])).strip().lower()
-        solo_host = next((h for h in hosts if name_of(h).lower() == solo_name), fav_hosts[0] if fav_hosts else hosts[0])
+        if intro_allowed:
+            count = int(self.cfg.get("host_intro_count", 2) or 2)
+        else:
+            min_count = max(1, int(self.cfg.get("host_regular_count_min", 1) or 1))
+            max_count = max(min_count, int(self.cfg.get("host_regular_count_max", 2) or 2))
+            multi_chance = clamp(float(self.cfg.get("host_regular_multi_chance", 0.18) or 0.18), 0.0, 1.0)
+            count = random.randint(min_count + 1, max_count) if max_count > min_count and random.random() < multi_chance else min_count
+        count = max(1, min(len(pool), count))
 
-        if len(hosts) < 2 or mode == "always_solo":
-            return [solo_host], False
-
-        if intro_allowed and mode in {"mostly_solo", "smart_multi"}:
-            # Opening block should introduce the station with at least two enabled/favorite hosts.
-            chosen = (fav_hosts if len(fav_hosts) >= 2 else hosts)[:min(2, len(hosts))]
-            return chosen, len(chosen) >= 2
-
-        if mode == "always_duo":
-            chosen_pool = fav_hosts if random.random() < fav_chance and len(fav_hosts) >= 2 else hosts
-            return chosen_pool[:min(2, len(chosen_pool))], True
-
-        if mode == "smart_multi":
-            max_n = max(1, min(len(hosts), int(self.cfg.get("host_active_count_max", 2) or 2)))
-            min_n = max(1, min(max_n, int(self.cfg.get("host_active_count_min", 1) or 1)))
-            multi_chance = clamp(float(self.cfg.get("host_multi_chance", 0.35) or 0.35), 0.0, 1.0)
-            if random.random() < multi_chance and max_n >= 2:
-                size = random.randint(max(2, min_n), max_n)
-                pool = fav_hosts[:] if random.random() < fav_chance and len(fav_hosts) >= size else hosts[:]
-                random.shuffle(pool)
-                chosen = pool[:size]
-                return chosen, len(chosen) >= 2
-            pool = fav_hosts if random.random() < fav_chance and fav_hosts else hosts
-            return [random.choice(pool)], False
-
-        # mostly_solo: one lead most of the time, duo sometimes. Favorites decide who is most common.
-        duo_chance = clamp(float(self.cfg.get("host_duo_chance", 0.35)), 0.0, 1.0)
-        if random.random() < duo_chance:
-            pool = fav_hosts if len(fav_hosts) >= 2 and random.random() < fav_chance else hosts
-            return pool[:2], True
-        pool = fav_hosts if fav_hosts and random.random() < fav_chance else hosts
-        return [random.choice(pool)], False
+        remaining = list(pool)
+        chosen: List[Dict[str, Any]] = []
+        while remaining and len(chosen) < count:
+            weights = []
+            for host in remaining:
+                try:
+                    weights.append(max(0.01, float(host.get("air_weight", 1.0) or 1.0)))
+                except Exception:
+                    weights.append(1.0)
+            selected = random.choices(remaining, weights=weights, k=1)[0]
+            chosen.append(selected)
+            remaining.remove(selected)
+        return chosen, len(chosen) >= 2
 
     def _choose_dj_plan(self, intro_allowed: bool, has_news: bool, has_weather: bool) -> Dict[str, str]:
         """Chooses the next host segment style.
@@ -665,6 +677,24 @@ class RadioEngine:
             return self.entertainment_pack
         self.entertainment_status = 'готовлю рубрики: гороскопы, загадки и игры...'
         pack = self._fallback_entertainment_pack()
+        if self.cfg.get('entertainment_agent_enabled', True) and self.cfg.get('entertainment_generate_with_lm', True) and self.cfg.get('lm_enabled', True):
+            try:
+                cached_pack = self.entertainment_agent.load_daily_cache()
+                pack = cached_pack or self.entertainment_agent.build(pack)
+                self.entertainment_status = (
+                    ("дневной кэш загружен: " if cached_pack else "агент подготовил рубрики: ")
+                    + f"{len(pack.get('horoscope') or [])} знаков, "
+                    f"{len(pack.get('riddles') or [])} загадок, {len(pack.get('wrong_games') or [])} игр"
+                )
+                self.entertainment_pack = pack
+                self.entertainment_pack_date = today
+                self.horoscope_index = 0
+                self.horoscope_blocks_since_riddle = 0
+                self.pending_riddle = None
+                return pack
+            except Exception as e:
+                self.entertainment_status = 'агент рубрик не ответил, использую прежний fallback'
+                log(f'Агент рубрик не смог собрать пакет: {e}')
         horoscope_mode = str(self.cfg.get('horoscope_source_mode', 'web_then_lm') or 'web_then_lm')
         riddle_mode = str(self.cfg.get('riddle_source_mode', 'web_then_lm') or 'web_then_lm')
         if horoscope_mode in {'web_then_lm', 'web_only'}:
@@ -747,13 +777,16 @@ class RadioEngine:
         if random.random() > float(self.cfg.get('entertainment_chance', 0.55) or 0.55):
             return {}
         pack = self.prepare_entertainment_pack('block')
+        history_date = time.strftime("%Y-%m-%d")
+        history_mode = "planned" if planned else "live"
         # Гость в эфире: короткая история/звонок. Может вклиниваться реже остальных рубрик.
         guest_allowed = bool(self.cfg.get('guest_enabled', False)) and ((planned and self.cfg.get('guest_in_planned', True)) or ((not planned) and self.cfg.get('guest_in_live', True)))
         if guest_allowed and (current_block - self.last_guest_block) >= int(self.cfg.get('guest_min_blocks_between', 6) or 6):
             if random.random() < float(self.cfg.get('guest_chance', 0.14) or 0.14):
-                guests = pack.get('guest_stories') or []
+                guests = filter_unused(self.cfg, "guest_story", pack.get('guest_stories') or [])
                 if guests:
                     g = random.choice(guests)
+                    mark_used(self.cfg, "guest_story", g, mode=history_mode)
                     self.last_guest_block = current_block
                     self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
@@ -767,9 +800,10 @@ class RadioEngine:
         # Игра “ответь неправильно” может вклиниться между гороскопами/загадками.
         if self.cfg.get('wrong_answer_game_enabled', True) and (current_block - self.last_wrong_game_block) >= int(self.cfg.get('wrong_answer_game_min_blocks_between', 4) or 4):
             if random.random() < float(self.cfg.get('wrong_answer_game_chance', 0.18) or 0.18):
-                games = pack.get('wrong_games') or []
+                games = filter_unused(self.cfg, "wrong_game", pack.get('wrong_games') or [])
                 if games:
                     g = random.choice(games)
+                    mark_used(self.cfg, "wrong_game", g, mode=history_mode)
                     self.last_wrong_game_block = current_block
                     self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
@@ -782,9 +816,10 @@ class RadioEngine:
         # Чередование: 2–3 гороскопа, затем загадка.
         if self.cfg.get('riddles_enabled', True) and self.horoscope_blocks_since_riddle >= self.horoscope_blocks_before_riddle_target:
             if (current_block - self.last_riddle_block) >= int(self.cfg.get('riddle_min_blocks_between', 3) or 3):
-                riddles = pack.get('riddles') or []
+                riddles = filter_unused(self.cfg, "riddle", pack.get('riddles') or [])
                 if riddles:
                     r = random.choice(riddles)
+                    mark_used(self.cfg, "riddle", r, mode=history_mode)
                     self.pending_riddle = r
                     self.last_riddle_block = current_block
                     self.last_entertainment_block = current_block
@@ -802,20 +837,23 @@ class RadioEngine:
                         'riddle_question_block': True,
                     }
         if self.cfg.get('horoscope_enabled', True):
-            hor = pack.get('horoscope') or []
-            if self.horoscope_index < len(hor):
+            hor = filter_unused(self.cfg, "horoscope", pack.get('horoscope') or [], history_date)
+            if hor:
                 lo = max(1, int(self.cfg.get('horoscope_chunk_min', 2) or 2))
                 hi = max(lo, int(self.cfg.get('horoscope_chunk_max', 3) or 3))
                 count = random.randint(lo, hi)
-                chunk = hor[self.horoscope_index:self.horoscope_index + count]
+                chunk = hor[:count]
+                for item in chunk:
+                    mark_used(self.cfg, "horoscope", item, date=history_date, mode=history_mode)
                 self.horoscope_index += len(chunk)
                 self.horoscope_blocks_since_riddle += 1
                 self.last_entertainment_block = current_block
                 self.entertainment_block_count += 1
-                done = self.horoscope_index >= len(hor)
+                done = len(chunk) >= len(hor)
                 return {
                     'entertainment_text': 'Гороскоп на сегодня. Обязательно назови каждый знак отдельно в формате «Овен: ...», «Телец: ...». Знаки и тексты: ' + json.dumps(chunk, ensure_ascii=False) + (' Это последний блок гороскопа, после него больше не объявляй гороскопы.' if done else ' В конце можно сказать, что остальные знаки продолжим в следующий раз.'),
-                    'entertainment_instruction': 'Озвучь 2–3 знака живо и кратко, строго в формате «Знак: прогноз». Не говори просто «для Овнов» без текста. Затем обычная подводка к следующей музыке.',
+                    'entertainment_instruction': 'Прочитай каждый переданный прогноз по смыслу полностью, без пересказа вида «прогноз был про любовь». Название знака не изменяй и пиши строго «Знак: прогноз». Затем сделай обычную подводку к следующей музыке.',
+                    'horoscope_expected': chunk,
                     'dj_topic_label': 'гороскоп и музыкальная подводка',
                     'dj_length': 'medium',
                 }
@@ -909,6 +947,7 @@ class RadioEngine:
             "host_strict_clock_guard": bool(self.cfg.get("host_strict_clock_guard", True)),
             "exact_time_text": exact_time_text,
             "weather_text": weather_text,
+            "weather_city": str(self.cfg.get("weather_city") or "").strip(),
             "news_text": news_text,
             "greeting_text": greeting_text,
             "two_hosts": bool(two_hosts and len(selected_hosts or []) >= 2),
@@ -942,11 +981,6 @@ class RadioEngine:
 
     def create_dj_segment(self, previous_track: Optional[Track], next_track: Optional[Track], *, intro_allowed: Optional[bool] = None, mark_aired: bool = False, context_overrides: Optional[Dict[str, Any]] = None) -> Optional[PreparedDJ]:
         selected_hosts, two = self._select_hosts_for_insert(bool(intro_allowed))
-        if bool(intro_allowed) and str(self.cfg.get("host_mode", "mostly_solo")).strip().lower() == "mostly_solo":
-            all_hosts = [h for h in (self.cfg.get("hosts") or []) if isinstance(h, dict) and str(h.get("name", "")).strip()]
-            if len(all_hosts) >= 2:
-                selected_hosts, two = all_hosts[:2], True
-                log("Стартовый эфир: режим mostly_solo, принудительно выбран диалог двух ведущих")
         text = ""
         ctx: Dict[str, Any] = {}
         if self.cfg.get("lm_enabled", True):
@@ -1014,17 +1048,44 @@ class RadioEngine:
                 if final_violations:
                     log("Финальная чистка контекста перед TTS: " + "; ".join(final_violations))
                     text = repair_time_context_text(sanitize_general_radio_text(text), ctx)
+                    if ctx.get("horoscope_expected") and any("гороскоп" in item for item in final_violations):
+                        host_name = str((selected_hosts[0] if selected_hosts else {}).get("name") or "Ведущий").strip()
+                        forecasts = []
+                        for item in ctx.get("horoscope_expected") or []:
+                            if not isinstance(item, dict):
+                                continue
+                            sign = str(item.get("sign") or "").strip()
+                            forecast = str(item.get("text") or "").strip()
+                            if sign and forecast:
+                                forecasts.append(f"{sign}: {forecast}")
+                        if forecasts:
+                            text = f"{host_name}: Гороскоп на сегодня. " + " ".join(forecasts)
+                            log("Гороскоп собран из проверенного пакета без повторного пересказа моделью")
             except Exception as e:
                 self.set_error(f"LM Studio недоступен или не ответил: {e}")
                 log(f"LM Studio не ответил, беру fallback-фразу: {e}")
         if not text:
-            text = random.choice(list(self.cfg.get("fallback_host_phrases") or DEFAULT_CONFIG["fallback_host_phrases"]))
+            fallback_names = [
+                str(h.get("name") or "").strip()
+                for h in selected_hosts
+                if isinstance(h, dict) and str(h.get("name") or "").strip()
+            ]
+            if len(fallback_names) >= 2:
+                text = (
+                    f"{fallback_names[0]}: Держим эфир живым и тёплым, следующий трек уже рядом. "
+                    f"{fallback_names[1]}: Оставайтесь с нами, впереди хорошая музыка."
+                )
+            elif fallback_names:
+                text = f"{fallback_names[0]}: Держим эфир живым и тёплым, следующий трек уже рядом."
+            else:
+                text = random.choice(list(self.cfg.get("fallback_host_phrases") or DEFAULT_CONFIG["fallback_host_phrases"]))
         text = sanitize_general_radio_text(postprocess_host_text_for_air(normalize_generated_radio_text(clean_host_text(text, int(self.cfg.get("max_host_text_chars", 4000) or 4000))), ctx))
         text = normalize_omnivoice_nonverbal_tags(
             text,
             enabled=bool(self.cfg.get("omnivoice_nonverbal_tags_enabled", True))
             and str(self.cfg.get("tts_backend", "")).lower().strip() in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"},
         )
+        text = soften_tts_exclamations(text)
         # На всякий случай не даём повторному блоку снова открывать эфир.
         if not (intro_allowed or False):
             text = re.sub(r"(?i)\b(добро пожаловать|начинаем эфир|с вами снова)\b[^.!?…]*[.!?…]?", "", text).strip() or text
@@ -2176,6 +2237,7 @@ class RadioEngine:
             "piper_exe", "piper_python", "piper_voice", "piper_model", "sapi_voice_contains", "f5_tts_python",
         }
         self.lm = LMStudioClient(self.cfg)
+        self.entertainment_agent = EntertainmentAgent(self.cfg, self.lm)
         if any(k in changed_keys for k in tts_affecting):
             try:
                 self.tts.close()
@@ -2195,12 +2257,19 @@ class RadioEngine:
             "station_style", "host_mode", "host_solo_name", "track_profiles_enabled", "track_profiles_file",
             "news_enabled", "weather_enabled", "listener_greetings_enabled", "lm_model", "lm_temperature", "lm_max_tokens",
             "tts_backend", "omnivoice_mode", "omnivoice_device", "omnivoice_python",
+            "entertainment_model", "entertainment_agent_enabled", "entertainment_agent_results_per_query",
+            "entertainment_agent_max_pages", "entertainment_agent_pages_per_topic",
+            "entertainment_agent_min_page_chars", "entertainment_agent_page_chars",
+            "entertainment_agent_total_evidence_chars", "entertainment_agent_factcheck_enabled",
+            "entertainment_daily_cache_dir", "entertainment_pack_max_items",
         }
         if any(k in changed_keys for k in plan_affecting):
             self.show_plan = []
             self.show_plan_index = 0
             self.next_show_plan = []
             self.show_plan_status = "план сброшен: изменились параметры, влияющие на программу"
+            self.entertainment_pack = {}
+            self.entertainment_pack_date = ""
         self.set_error("")
 
     def status_snapshot(self) -> Dict[str, Any]:
@@ -2250,6 +2319,7 @@ class RadioEngine:
                     for i, it in enumerate(self.show_plan[:int(self.cfg.get("show_plan_preview_items", 80) or 80)])
                 ],
                 "radio_running": self.is_running(),
+                "radio_starting": self.is_starting(),
             }
         with self.prepare_lock:
             snap["prepared_status"] = self.prepared_status

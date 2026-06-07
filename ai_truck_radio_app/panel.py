@@ -66,7 +66,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         "speech_radio_processing_enabled", "speech_compressor_enabled", "speech_presence_eq_enabled", "speech_loudnorm_enabled", "speech_limiter_enabled", "jingle_enabled", "auto_generate_sweep_jingle",
         "show_plan_enabled", "show_plan_block_until_ready", "show_plan_include_intro", "show_plan_rebuild_on_start", "show_plan_continuous_extend", "show_plan_live_after_exhausted",
         "show_plan_intro_long_opening", "show_plan_unique_greetings", "show_plan_fill_music_while_generating", "show_plan_auto_enable_after_generation", "exact_hour_time_announce_enabled", "listener_greetings_enabled", "tts_parse_validation_enabled", "radio_autostart",
-        "clean_generated_on_start", "clean_generated_on_restart", "station_id_enabled", "station_id_fallback_tts_enabled", "live_blocking_dj_when_due", "live_prepare_at_track_start_when_due", "startup_intro_reserve_first_track", "host_should_use_stress_marks", "host_duo_intro_in_mostly_solo", "strict_duo_intro_require_both", "avoid_road_cliche_prompt", "season_reality_guard_enabled", "host_creative_fact_mode", "host_strict_clock_guard", "live_expected_speech_time_enabled", "omnivoice_prewarm_on_radio_start", "entertainment_enabled", "entertainment_in_live", "entertainment_in_planned", "horoscope_enabled", "horoscope_generate_before_radio", "riddles_enabled", "wrong_answer_game_enabled", "entertainment_generate_with_lm", "entertainment_status_in_panel", "guest_enabled", "guest_in_live", "guest_in_planned", "guest_generate_before_radio", "guest_voice_warning_in_panel",
+        "clean_generated_on_start", "clean_generated_on_restart", "station_id_enabled", "station_id_fallback_tts_enabled", "live_blocking_dj_when_due", "live_prepare_at_track_start_when_due", "startup_intro_reserve_first_track", "host_should_use_stress_marks", "host_duo_intro_in_mostly_solo", "strict_duo_intro_require_both", "avoid_road_cliche_prompt", "season_reality_guard_enabled", "host_creative_fact_mode", "host_strict_clock_guard", "live_expected_speech_time_enabled", "omnivoice_prewarm_on_radio_start", "entertainment_enabled", "entertainment_in_live", "entertainment_in_planned", "horoscope_enabled", "horoscope_generate_before_radio", "riddles_enabled", "wrong_answer_game_enabled", "entertainment_generate_with_lm", "entertainment_agent_enabled", "entertainment_agent_factcheck_enabled", "entertainment_agent_no_think", "entertainment_agent_structured_output", "entertainment_status_in_panel", "guest_enabled", "guest_in_live", "guest_in_planned", "guest_generate_before_radio", "guest_voice_warning_in_panel",
     ]
     checkbox_keys = list(dict.fromkeys(checkbox_keys))
     hidden_checkbox_keys = ",".join(checkbox_keys)
@@ -79,28 +79,15 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
     guest_status = engine._guest_ref_status() if hasattr(engine, "_guest_ref_status") else {"audio_exists": False, "audio": "references/guest_ref.wav"}
     guest_voice_mode = str(cfg.get("guest_voice_mode", default_config.get("guest_voice_mode", "design")) or "design")
     guest_warning = "" if guest_voice_mode != "reference" or guest_status.get("audio_exists") else f"<div class='warn-box'>Reference-файл гостя не найден: {esc(guest_status.get('audio'))}. Переключи режим голоса гостя на design или добавь файл.</div>"
-    favorite_names = [x.strip() for x in str(cfg.get("host_favorite_names", "") or "").replace(";", ",").split(",") if x.strip()]
-    favorite_names_json = json.dumps(favorite_names, ensure_ascii=False)
-    favorite_hosts_picker = (
-        f'<div class="setting favorite-hosts-setting" data-setting-key="host_favorite_names">'
-        f'<div class="setting-title"><span>Кто чаще в эфире</span><span class="tip" title="Выбери ведущих из списка ниже. Их не надо писать вручную.">?</span>{reset_button("host_favorite_names")}</div>'
-        f'<input type="hidden" name="host_favorite_names" id="hostFavoriteNames" value="{esc(cfg.get("host_favorite_names", default_config.get("host_favorite_names", "")))}">'
-        f'<div id="favoriteHostsPicker" class="favorite-hosts-picker" data-selected="{esc(favorite_names_json)}"></div>'
-        f'</div>'
-    )
     hosts_settings = "".join([
-        '<div class="host-editor-note">Здесь можно добавлять ведущих и управлять их голосами. Ведущим обычно полезен reference WAV/MP3, а гостям-звонящим можно использовать OmniVoice design без reference.</div>',
+        '<div class="host-editor-note">Для каждого ведущего отдельно задаётся участие во вступлении, обычном эфире и относительная частота появления. Вес 1.0 — основной ведущий; 0.2 — появляется примерно в пять раз реже при одиночном составе.</div>',
         f'<input type="hidden" name="hosts_json" id="hostsJson" value="{esc(hosts_editor_json)}">',
         '<div id="hostsEditor" class="hosts-editor"></div>',
         '<div class="actions-row"><button type="button" id="addHostBtn" class="secondary">+ Добавить ведущего</button><button type="button" id="resetHostsBtn" class="ghost">Вернуть стандартных</button></div>',
-        select_box("host_mode", "Режим ведущих", ["always_solo", "mostly_solo", "always_duo", "smart_multi"], "always_solo — всегда один; mostly_solo — чаще один, но вступление дуэтом; always_duo — всегда два; smart_multi — гибко выбирает включённых ведущих."),
-        favorite_hosts_picker,
-        input_num("host_favorite_chance", "Шанс выбора частых ведущих", "Вероятность выбрать ведущих из списка 'Кто чаще в эфире'.", "0", "1", "0.05"),
-        input_num("host_multi_chance", "Шанс нескольких ведущих", "Для smart_multi: как часто в одном блоке звучат 2–3 ведущих, а не один.", "0", "1", "0.05"),
-        input_num("host_active_count_min", "Минимум ведущих в multi", "Для smart_multi.", "1", "5", "1"),
-        input_num("host_active_count_max", "Максимум ведущих в multi", "Для smart_multi. Обычно 2, максимум 3, чтобы эфир не превращался в толпу.", "1", "5", "1"),
-        input_num("host_duo_chance", "Шанс дуэта после вступления", "Для режима mostly_solo: как часто после стартового диалога будут говорить оба ведущих.", "0", "1", "0.05"),
-        checkbox("host_duo_intro_in_mostly_solo", "Вступление всегда дуэтом в mostly_solo", "Если режим 'двое, но чаще один', стартовый блок делают Максим и Ирина."),
+        input_num("host_intro_count", "Ведущих во вступлении", "Сколько включённых ведущих участвует в первом блоке.", "1", "8", "1"),
+        input_num("host_regular_count_min", "Обычно ведущих в блоке", "Минимальное число ведущих после вступления.", "1", "8", "1"),
+        input_num("host_regular_count_max", "Максимум ведущих в блоке", "Верхняя граница для редких расширенных разговоров.", "1", "8", "1"),
+        input_num("host_regular_multi_chance", "Шанс расширенного состава", "Вероятность выбрать больше обычного минимума ведущих.", "0", "1", "0.05"),
         checkbox("strict_duo_intro_require_both", "Не выпускать старт без второго ведущего", "Если LM не дала обоих ведущих, запрос повторяется, а соло-вступление не выпускается."),
         checkbox("guest_enabled", "Гость в эфире", "Включает редкие короткие истории гостя/слушателя как отдельную рубрику."),
         checkbox("guest_in_live", "Гость в Live", "Гость может появляться в live-режиме."),
@@ -161,7 +148,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         checkbox("track_profiles_web_lookup_enabled", "Искать сведения о музыке в интернете", "Агент составит запросы, откроет найденные страницы и передаст их текст локальной модели."),
         checkbox("track_profiles_force_rebuild_existing", "Сгенерировать заново даже для уже существующих песен", "Выключено: обрабатываются только новые/неописанные треки. Включено: пересобираются все профили, удобно после фикса ошибок."),
         select_box("track_profiles_research_mode", "Режим исследования", ["web_agent", "legacy_apis"], "web_agent — поиск и чтение обычных страниц; legacy_apis — прежние MusicBrainz/Wikipedia/Deezer/iTunes API."),
-        input_text("track_analyzer_model", "Модель для описаний музыки", "Отдельная модель LM Studio только для исследования треков. local-model берёт первую загруженную модель."),
+        input_text("track_analyzer_model", "Модель для описаний музыки", "Отдельная модель LM Studio только для исследования треков. Список загруженных моделей обновляется из LM Studio."),
         input_num("track_profiles_agent_max_queries", "Поисковых запросов на трек", "Агент сам формулирует запросы. Обычно достаточно 3–4.", "1", "8"),
         input_num("track_profiles_agent_search_results_per_query", "Результатов на один запрос", "Сколько ссылок брать из поисковой выдачи до фильтрации и чтения.", "2", "20"),
         input_num("track_profiles_agent_max_pages", "Прочитать страниц на трек", "Больше страниц повышает шанс проверки фактов, но заметно замедляет обработку.", "1", "8"),
@@ -215,6 +202,23 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         input_num("wrong_answer_game_chance", "Шанс игры", "Игра может вклиниться между гороскопами и загадками.", "0", "1", "0.05"),
         input_num("wrong_answer_game_min_blocks_between", "Игра: пауза между появлениями", "Чтобы мини-игра не повторялась слишком часто.", "1", "50", "1"),
         checkbox("entertainment_generate_with_lm", "Генерировать пакет рубрик через LM", "LM Studio подготовит гороскопы/загадки/игры на сегодня. Если выключено — используется встроенный fallback."),
+        checkbox("entertainment_agent_enabled", "Агентный поиск для рубрик", "Агент сам ищет страницы по каждой теме, читает их и передаёт факты выбранной локальной модели. Старые фиксированные источники используются только при сбое."),
+        input_text("entertainment_model", "Модель для рубрик и игр", "Независимая модель LM Studio для гороскопов, загадок и викторин. Список берётся из LM Studio."),
+        input_num("entertainment_agent_results_per_query", "Результатов поиска на тему", "Сколько ссылок просматривать в выдаче для гороскопов, загадок и вопросов викторины.", "1", "20", "1"),
+        input_num("entertainment_agent_max_pages", "Всего страниц для рубрик", "Общий предел прочитанных страниц за один сбор пакета.", "3", "30", "1"),
+        input_num("entertainment_agent_pages_per_topic", "Страниц на одну тему", "Не даёт гороскопам занять весь лимит: отдельно резервирует страницы загадкам и викторинам.", "1", "10", "1"),
+        input_num("entertainment_agent_min_page_chars", "Минимальный размер страницы", "Слишком короткие страницы и пустые заглушки будут отброшены.", "100", "5000", "50"),
+        input_num("entertainment_agent_page_chars", "Символов читать со страницы", "Максимум текста одной страницы, передаваемого в исследование.", "1000", "30000", "500"),
+        input_num("entertainment_agent_total_evidence_chars", "Общий контекст источников", "Суммарный объём прочитанных фактов. Для контекста 8192 токена разумно 12000–18000 символов.", "3000", "50000", "1000"),
+        input_num("entertainment_agent_page_timeout_sec", "Таймаут одной страницы, сек", "Сколько ждать поиск или открытие отдельной страницы.", "3", "60", "1"),
+        input_num("entertainment_agent_max_tokens", "Токены ответа агента", "Пакет с 12 знаками и играми требует больше токенов, чем обычная реплика ведущего.", "600", "8000", "100"),
+        input_num("entertainment_agent_temperature", "Temperature агента", "Низкое значение уменьшает выдумки при сборке фактов; юмор для неправильных ответов всё равно разрешён.", "0", "1", "0.05"),
+        checkbox("entertainment_agent_factcheck_enabled", "Второй проход фактчека", "Модель ещё раз сверяет загадки и правильные ответы с прочитанными страницами."),
+        checkbox("entertainment_agent_no_think", "Быстрый режим /no_think", "Полезно для небольших моделей. Для сильной reasoning-модели можно выключить."),
+        checkbox("entertainment_agent_structured_output", "Требовать структурированный JSON", "Использует JSON schema LM Studio и уменьшает число сломанных ответов."),
+        input_text("entertainment_history_file", "Журнал использованных рубрик", "Хранит короткие отпечатки уже выбранных загадок, игр и знаков гороскопа. В промпт ведущих весь архив не передаётся."),
+        input_num("entertainment_history_max_items", "Размер журнала рубрик", "Сколько последних использованных загадок и игр помнить между перезапусками.", "100", "10000", "100"),
+        input_text("entertainment_daily_cache_dir", "Дневной кэш рубрик", "JSON за каждый день с источниками, выдержками, результатами проверки и итоговым пакетом."),
         input_num("entertainment_pack_timeout_sec", "Таймаут генерации рубрик, сек", "Сколько ждать LM Studio при подготовке пакета рубрик.", "10", "300", "5"),
         input_num("entertainment_pack_max_items", "Максимум загадок/игр в пакете", "Ограничивает объём заранее созданного пакета.", "1", "30", "1"),
         input_num("rubric_web_timeout_sec", "Таймаут веб-рубрик, сек", "Сколько ждать сайт с гороскопом/загадкой до fallback.", "3", "60", "1"),
@@ -260,7 +264,7 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
 
     lm_settings = "".join([
         checkbox("lm_enabled", "LM Studio для текстов", "Если выключить, радио берёт fallback-фразы."),
-        input_text("lm_model", "Модель LM Studio", "Например qwen/qwen3.5-9b; local-model берёт первую загруженную."),
+        input_text("lm_model", "Модель ведущих и эфира", "Используется только для реплик ведущих и планового эфира. Список загруженных моделей берётся из LM Studio."),
         input_num("lm_temperature", "Temperature", "0.70–0.85 для живого, но не бредового эфира.", "0", "2", "0.01"),
         input_num("lm_max_tokens", "Max tokens", "Для Thinking и планового эфира лучше 900–1400.", "100", "4000", "50"),
         input_num("lm_timeout_sec", "Timeout LM, сек", "Дай больше времени при Thinking/плановой генерации.", "10", "600", "5"),
@@ -312,26 +316,38 @@ main {{ min-width:0; overflow:hidden; display:flex; flex-direction:column; }}
 .controls .side-check {{ grid-column:1/-1; grid-row:4; }}
 .controls #clearGenBtn {{ grid-column:2; grid-row:3; }}
 .side-check {{ display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid rgba(255,255,255,.06); border-radius:8px; background:rgba(0,0,0,.16); font-size:12px; }} .side-check input {{ width:auto; flex:0 0 auto; }}
-.player-card {{ position:fixed; left:50%; bottom:16px; z-index:30; transform:translateX(-50%); width:min(940px,calc(100vw - 34px)); display:grid; grid-template-columns:minmax(170px,220px) minmax(260px,1fr) auto; gap:14px; align-items:center; padding:12px 14px; background:rgba(8,13,24,.97); backdrop-filter:blur(18px); border:1px solid rgba(124,199,255,.24); border-radius:14px; box-shadow:0 20px 54px rgba(0,0,0,.48); }}
-.player-card.is-collapsed {{ width:min(420px,calc(100vw - 34px)); grid-template-columns:minmax(150px,1fr) auto; }}
-.player-card.is-collapsed .player-meta,.player-card.is-collapsed .player-volume,.player-card.is-collapsed #stopBtn {{ display:none; }}
+.player-card {{ position:fixed; left:50%; bottom:14px; z-index:30; transform:translateX(-50%); width:min(980px,calc(100vw - 34px)); display:grid; grid-template-columns:minmax(155px,190px) minmax(320px,1fr) auto auto; gap:14px; align-items:center; padding:12px 14px; background:rgba(8,13,24,.98); backdrop-filter:blur(18px); border:1px solid rgba(124,199,255,.22); border-radius:10px; box-shadow:0 20px 54px rgba(0,0,0,.48); }}
+.player-card.is-collapsed {{ width:min(360px,calc(100vw - 34px)); grid-template-columns:minmax(150px,1fr) auto auto; padding-block:9px; }}
+.player-card.is-collapsed .player-meta,.player-card.is-collapsed .player-volume,.player-card.is-collapsed #liveEdgeBtn {{ display:none; }}
 .player-brand {{ display:grid; grid-template-columns:auto minmax(0,1fr); grid-template-rows:auto auto; column-gap:10px; align-items:center; min-width:0; }}
 .player-dot {{ grid-row:1/3; width:10px; height:10px; border-radius:50%; background:#687388; box-shadow:0 0 0 5px rgba(104,115,136,.14); }}
 .player-card.is-live .player-dot {{ background:#f05252; box-shadow:0 0 0 5px rgba(240,82,82,.16),0 0 22px rgba(240,82,82,.5); }}
 .player-name {{ font-weight:900; color:#f0f6ff; line-height:1.1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
 .player-state {{ color:var(--muted); font-size:11px; line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-.player-meta {{ min-width:0; display:grid; gap:6px; }}
+.player-meta {{ min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:12px; row-gap:6px; align-items:center; }}
 .player-track {{ color:#e8f1ff; font-size:13px; font-weight:800; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-.player-sub {{ color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.player-sub {{ color:var(--muted); font-size:11px; white-space:nowrap; }}
+.player-timeline {{ grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) 48px; gap:9px; align-items:center; }}
+.player-timeline input {{ width:100%; height:4px; padding:0; accent-color:#8ed1ff; cursor:pointer; }}
+.player-time {{ color:#9fb0ca; font-size:10px; font-variant-numeric:tabular-nums; text-align:right; }}
 .player-actions {{ display:flex; align-items:center; gap:8px; justify-content:flex-end; }}
 .player-card button {{ min-height:38px; padding:8px 12px; font-size:12px; line-height:1.08; }}
 .player-card audio {{ position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }}
-#playBtn {{ min-width:104px; background:#354057; color:#eaf2ff; border:1px solid #56627c; }}
+#playBtn {{ width:42px; min-width:42px; padding:0; font-size:18px; background:#354057; color:#eaf2ff; border:1px solid #56627c; }}
 #playBtn.is-live {{ background:#d84545; color:#fff; border-color:#ff7b7b; }}
-#stopBtn {{ min-width:82px; }}
-.player-volume {{ display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; }}
-.player-volume input {{ width:92px; padding:0; accent-color:var(--accent); }}
-#playerCollapseBtn {{ width:38px; padding:8px 0; border-radius:999px; }}
+#liveEdgeBtn {{ min-width:78px; background:#202b40; color:#cbd8ee; }}
+#liveEdgeBtn.is-behind {{ color:#fff; background:#8e3238; }}
+.player-volume {{ display:flex; align-items:center; gap:9px; color:var(--muted); font-size:11px; min-width:185px; }}
+.player-volume input {{ width:132px; height:28px; padding:0; margin:0; accent-color:var(--accent); cursor:pointer; }}
+.player-volume input::-webkit-slider-runnable-track {{ height:6px; border-radius:999px; background:#314264; }}
+.player-volume input::-webkit-slider-thumb {{ margin-top:-5px; width:16px; height:16px; }}
+#playerCollapseBtn {{ width:24px; min-height:34px; padding:0; border:0; border-radius:0; background:transparent; color:#91a4bf; display:grid; place-items:center; }}
+#playerCollapseBtn:hover {{ color:#fff; filter:none; }}
+#playerCollapseBtn:focus {{ outline:none; box-shadow:none; }}
+#playerCollapseBtn::before {{ content:''; width:8px; height:8px; border-right:2px solid currentColor; border-bottom:2px solid currentColor; transform:rotate(45deg) translateY(-2px); transition:transform .18s; }}
+.player-card.is-collapsed #playerCollapseBtn::before {{ transform:rotate(225deg) translate(-1px,-1px); }}
+.model-health {{ grid-column:1/-1; display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }}
+.model-health.ok {{ color:var(--good); }} .model-health.bad {{ color:var(--bad); }}
 .toast-stack {{ position:fixed; top:72px; right:18px; z-index:60; width:min(360px,calc(100vw - 36px)); display:grid; gap:10px; pointer-events:none; }}
 .toast-item {{ pointer-events:auto; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:start; padding:11px 12px; border-radius:10px; background:rgba(12,20,36,.97); border:1px solid rgba(124,199,255,.24); box-shadow:0 16px 44px rgba(0,0,0,.34); color:#eaf2ff; font-size:12px; line-height:1.3; }}
 .toast-item button {{ width:24px; height:24px; min-height:24px; padding:0; border-radius:7px; background:rgba(255,255,255,.06); color:#b8c8e6; }}
@@ -373,11 +389,11 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
 </style>
 </head>
 <body>
-<header class="top"><div class="topline"><div><h1>AI Truck Radio — Control Center</h1><div class="sub">{esc(app_version)} · эфир запускается только из панели</div></div><div><span id="runBadge" class="chip {'live' if snap.get('radio_running') else 'stopped'}">{'● В эфире' if snap.get('radio_running') else '● Остановлено'}</span></div></div></header>
+<header class="top"><div class="topline"><div><h1>AI Truck Radio - Control Center</h1></div><div><span id="runBadge" class="chip {'live' if snap.get('radio_running') else 'stopped'}">{'● В эфире' if snap.get('radio_running') else ('● Запускается' if snap.get('radio_starting') else '● Остановлено')}</span></div></div></header>
 <div class="layout">
   <aside class="side">
     <div class="card side-hero">
-      <div class="side-title"><span class="mini">Сейчас</span><span id="runMini" class="mini">{('эфир идёт' if snap.get('radio_running') else 'эфир выключен')}</span></div>
+      <div class="side-title"><span class="mini">Сейчас</span><span id="runMini" class="mini">{('эфир идёт' if snap.get('radio_running') else ('эфир запускается' if snap.get('radio_starting') else 'эфир выключен'))}</span></div>
       <div class="now" id="now">{esc(snap.get('now_playing',''))}</div>
       <div class="status-pills">
         <div class="pill">Режим<br><b id="airMode">{esc(snap.get('air_mode','Live'))}</b></div>
@@ -416,28 +432,30 @@ textarea {{ min-height:90px; resize:vertical; }} pre {{ white-space:pre-wrap; ov
       <section class="tab-panel" data-panel="music"><div class="card"><h2 class="section-title">Музыка, факты и интернет-описания</h2><p class="explain">Агент LM Studio формулирует поисковые запросы, читает найденные страницы и собирает короткий профиль для ведущих. Второй проход удаляет неподтверждённые факты; ссылки и исходные выдержки сохраняются для проверки.</p><div class="actions-row"><button type="button" id="trackProfileBtn2">🎧 Сгенерировать/обновить описания музыки</button><button type="button" id="rescanBtn2" class="secondary">Пересканировать музыку</button></div><div class="grid">{music_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки музыки</button></div></div></section>
       <section class="tab-panel" data-panel="live"><div class="card"><h2 class="section-title">Live-режим</h2><p class="explain">Live генерирует блоки по ходу эфира. Он быстрее, но менее продуман, чем предгенерация. Если план кончится, радио может перейти сюда.</p><div class="grid">{live_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки Live</button></div></div></section>
       <section class="tab-panel" data-panel="hosts"><div class="card"><h2 class="section-title">Ведущие и гости</h2><p class="explain">Добавляй ведущих, выбирай частых участников эфира и настраивай гостя-звонящего. Гость может звучать через OmniVoice design без собственного reference-файла.</p><div class="grid">{hosts_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить ведущих и гостя</button></div></div></section>
-      <section class="tab-panel" data-panel="fun"><div class="card"><h2 class="section-title">Рубрики и игры</h2><p class="explain">Гороскопы, загадки и игра “ответь неправильно” могут работать и в Live, и в плановом эфире. Обычные разговоры ведущих не исчезают: рубрика либо совмещается с музыкальной подводкой, либо аккуратно вклинивается между обычными темами.</p><div class="progress"><b>Статус рубрик:</b> <span id="entertainmentStatus">{esc(snap.get('entertainment_status',''))}</span></div><div class="grid">{entertainment_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки рубрик</button></div></div></section>
+      <section class="tab-panel" data-panel="fun"><div class="card"><h2 class="section-title">Рубрики и игры</h2><p class="explain">Гороскопы, загадки и игра “ответь неправильно” могут работать и в Live, и в плановом эфире. Обычные разговоры ведущих не исчезают: рубрика либо совмещается с музыкальной подводкой, либо аккуратно вклинивается между обычными темами.</p><div class="progress"><b>Статус рубрик:</b> <span id="entertainmentStatus">{esc(snap.get('entertainment_status',''))}</span></div><div class="grid">{entertainment_settings}</div><div class="actions-row"><button type="submit" class="secondary">Сохранить настройки рубрик</button><button type="button" id="clearEntertainmentHistoryBtn" class="ghost">Очистить журнал повторов</button></div></div></section>
       <section class="tab-panel" data-panel="voice"><div class="card"><h2 class="section-title">Голос, подложка и обработка</h2><p class="explain">Здесь регулируется слышимость ведущих относительно музыки. Если голос тихий — подними громкость голоса и/или LUFS. Подложка должна быть тихой: примерно -24…-18 dB.</p><div class="grid">{voice_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки голоса</button></div></div></section>
-      <section class="tab-panel" data-panel="lm"><div class="card"><h2 class="section-title">LM Studio</h2><p class="explain">Для подготовленного эфира можно включать Thinking в LM Studio и не добавлять /no_think. Для live можно наоборот ускорить модель.</p><div class="grid">{lm_settings}</div><div class="actions-row"><button type="submit" class="secondary">💾 Сохранить настройки LM</button></div></div></section>
+      <section class="tab-panel" data-panel="lm"><div class="card"><h2 class="section-title">LM Studio</h2><p class="explain">Для подготовленного эфира можно включать Thinking в LM Studio и не добавлять /no_think. Для live можно наоборот ускорить модель.</p><div class="grid">{lm_settings}</div><div class="actions-row"><button type="submit" class="secondary">Сохранить настройки LM</button><button type="button" id="refreshModelsBtn" class="ghost">Обновить список моделей</button></div></div></section>
       <section class="tab-panel" data-panel="system"><div class="card"><h2 class="section-title">Система</h2><p class="explain">Пути, автозапуск, чистка старых файлов и базовые параметры стрима.</p><div class="grid">{system_settings}</div><div class="actions-row"><button type="submit">💾 Сохранить настройки</button></div></div></section>
     </form>
   </main>
 </div>
 <div class="player-card" id="playerDock">
   <div class="player-brand"><span class="player-dot" aria-hidden="true"></span><span class="player-name">{esc(cfg.get('station_name','Волна FM'))}</span><span class="player-state" id="playerState">не подключено</span></div>
-  <div class="player-meta"><div class="player-track" id="playerTrack">{esc(snap.get('now_playing') or 'Радио остановлено')}</div><div class="player-sub" id="playerSub">локальный поток · {esc(snap.get('air_mode','Live'))}</div></div>
+  <div class="player-meta"><div class="player-track" id="playerTrack">{esc(snap.get('now_playing') if snap.get('radio_running') else '')}</div><div class="player-timeline"><input id="playerSeek" type="range" min="0" max="0" step="0.1" value="0" disabled aria-label="Перемотка накопленного эфира"><span class="player-time" id="playerTime">Эфир</span></div></div>
   <div class="player-actions">
     <audio id="player"></audio>
-    <button id="playBtn" type="button">Слушать</button>
+    <button id="playBtn" type="button" title="Воспроизвести эфир" aria-label="Воспроизвести эфир">▶</button>
+    <button id="liveEdgeBtn" type="button" title="Перейти к текущему моменту эфира">К эфиру</button>
     <label class="player-volume" title="Громкость плеера">Громкость <input id="playerVolume" type="range" min="0" max="1" step="0.01" value="1"></label>
-    <button id="stopBtn" type="button" class="ghost">Сбросить</button>
-    <button id="playerCollapseBtn" type="button" class="ghost" title="Свернуть/развернуть плеер">⌄</button>
   </div>
+  <button id="playerCollapseBtn" type="button" title="Свернуть/развернуть плеер" aria-label="Свернуть или развернуть плеер"></button>
 </div>
 <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 <script>
 const DEFAULTS = {defaults_json};
 const player = document.getElementById('player');
+const STATION_NAME = {json.dumps(str(cfg.get('station_name','Волна FM')), ensure_ascii=False)};
+const MODEL_FIELDS = ['lm_model','track_analyzer_model','entertainment_model'];
 function byId(id) {{ return document.getElementById(id); }}
 function say(t) {{
   if (!t) return;
@@ -451,7 +469,15 @@ function say(t) {{
   setTimeout(() => item.remove(), 5200);
 }}
 window.say = say;
-function setText(id, value) {{ const el = byId(id); if (el) el.textContent = value ?? ''; }}
+function setText(id, value) {{
+  const el = byId(id); if (!el) return;
+  const next = String(value ?? '');
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {{
+    if (el.value !== next) el.value = next;
+  }} else if (el.textContent !== next) {{
+    el.textContent = next;
+  }}
+}}
 function setProgress(id, p) {{ const el = byId(id); if (el) el.style.width = Math.max(0, Math.min(100, Number(p)||0)) + '%'; }}
 async function post(url, data={{}}) {{ const r = await fetch(url, {{method:'POST', body:new URLSearchParams(data)}}); const j = await r.json().catch(() => ({{ok:false,error:'bad json'}})); if (!j.ok) throw new Error(j.error || 'команда не выполнена'); return j; }}
 function cleanFlag() {{ return byId('cleanOnControl')?.checked ? '1' : '0'; }}
@@ -464,7 +490,7 @@ function defaultFieldValue(key) {{ const v = DEFAULTS[key]; if (typeof v === 'bo
 function refreshResetButtons() {{ document.querySelectorAll('.reset-key').forEach(btn => {{ const key = btn.dataset.key; const cur = normalizeForCompare(currentFieldValue(key)); const def = normalizeForCompare(defaultFieldValue(key)); btn.classList.toggle('is-hidden', cur === def); }}); refreshDependencyStates(); }}
 function applyValue(key, value) {{ const el = document.querySelector(`[name="${{CSS.escape(key)}}"]`); if (!el) return; if (el.type === 'checkbox') {{ el.checked = !!value; }} else {{ el.value = value ?? ''; }} el.dispatchEvent(new Event('change', {{bubbles:true}})); }}
 const DEPENDENCIES = {{
-  entertainment_in_live:['entertainment_enabled'], entertainment_in_planned:['entertainment_enabled'], entertainment_integration_mode:['entertainment_enabled'], entertainment_chance:['entertainment_enabled'], entertainment_min_blocks_between:['entertainment_enabled'], entertainment_generate_with_lm:['entertainment_enabled'], entertainment_pack_timeout_sec:['entertainment_enabled'], entertainment_pack_max_items:['entertainment_enabled'], rubric_web_timeout_sec:['entertainment_enabled'],
+  entertainment_in_live:['entertainment_enabled'], entertainment_in_planned:['entertainment_enabled'], entertainment_integration_mode:['entertainment_enabled'], entertainment_chance:['entertainment_enabled'], entertainment_min_blocks_between:['entertainment_enabled'], entertainment_generate_with_lm:['entertainment_enabled'], entertainment_agent_enabled:['entertainment_enabled','entertainment_generate_with_lm'], entertainment_model:['entertainment_enabled','entertainment_generate_with_lm','entertainment_agent_enabled'], entertainment_agent_results_per_query:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_max_pages:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_pages_per_topic:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_min_page_chars:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_page_chars:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_total_evidence_chars:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_page_timeout_sec:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_max_tokens:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_temperature:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_factcheck_enabled:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_no_think:['entertainment_enabled','entertainment_agent_enabled'], entertainment_agent_structured_output:['entertainment_enabled','entertainment_agent_enabled'], entertainment_pack_timeout_sec:['entertainment_enabled'], entertainment_pack_max_items:['entertainment_enabled'], rubric_web_timeout_sec:['entertainment_enabled'],
   horoscope_enabled:['entertainment_enabled'], horoscope_source_mode:['entertainment_enabled','horoscope_enabled'], horoscope_generate_before_radio:['entertainment_enabled','horoscope_enabled'], horoscope_chunk_min:['entertainment_enabled','horoscope_enabled'], horoscope_chunk_max:['entertainment_enabled','horoscope_enabled'], horoscope_blocks_before_riddle_min:['entertainment_enabled','horoscope_enabled','riddles_enabled'], horoscope_blocks_before_riddle_max:['entertainment_enabled','horoscope_enabled','riddles_enabled'],
   riddles_enabled:['entertainment_enabled'], riddle_source_mode:['entertainment_enabled','riddles_enabled'], riddle_min_blocks_between:['entertainment_enabled','riddles_enabled'], riddle_options_count:['entertainment_enabled','riddles_enabled'],
   wrong_answer_game_enabled:['entertainment_enabled'], wrong_answer_game_chance:['entertainment_enabled','wrong_answer_game_enabled'], wrong_answer_game_min_blocks_between:['entertainment_enabled','wrong_answer_game_enabled'],
@@ -480,33 +506,51 @@ let hostsData = [];
 try {{ hostsData = JSON.parse(document.getElementById('hostsJson')?.value || '[]'); }} catch(e) {{ hostsData = []; }}
 function escHtml(v) {{ return String(v ?? '').replace(/[&<>\"]/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c])); }}
 function serializeHosts() {{ const hidden=byId('hostsJson'); if (hidden) hidden.value = JSON.stringify(hostsData); }}
-function selectedFavoriteNames() {{ return (byId('hostFavoriteNames')?.value || '').split(',').map(x=>x.trim()).filter(Boolean); }}
-function serializeFavoriteHosts() {{
-  const hidden = byId('hostFavoriteNames'); if (!hidden) return;
-  hidden.value = [...document.querySelectorAll('.favorite-host-check:checked')].map(x=>x.value).join(', ');
-  refreshResetButtons();
-}}
-function renderFavoriteHosts() {{
-  const box = byId('favoriteHostsPicker'); if (!box) return;
-  const selected = new Set(selectedFavoriteNames().map(x=>x.toLowerCase()));
-  const names = hostsData.map(h => String(h?.name || '').trim()).filter(Boolean);
-  box.innerHTML = names.map(name => `<label><input type="checkbox" class="favorite-host-check" value="${{escHtml(name)}}" ${{selected.has(name.toLowerCase()) ? 'checked' : ''}}> ${{escHtml(name)}}</label>`).join('') || '<div class="mini">Сначала добавь ведущих выше.</div>';
-  box.querySelectorAll('.favorite-host-check').forEach(inp => inp.addEventListener('change', serializeFavoriteHosts));
-  serializeFavoriteHosts();
-}}
 function renderHostsEditor() {{
   const box=byId('hostsEditor'); if (!box) return; if (!Array.isArray(hostsData)) hostsData=[];
-  box.innerHTML = hostsData.map((h,i)=>`<div class="host-card" data-host-index="${{i}}"><h3 class="host-card-head"><label class="host-title-switch"><input type="checkbox" data-host-field="enabled" ${{h.enabled === false ? '' : 'checked'}}><span class="switch-ui" aria-hidden="true"></span><span>Ведущий ${{i+1}}: ${{escHtml(h.name||'без имени')}}</span></label><button type="button" class="host-remove" data-i="${{i}}">Удалить</button></h3><label>Имя<input data-host-field="name" value="${{escHtml(h.name||'')}}"></label><label>Псевдонимы через запятую<input data-host-field="aliases" value="${{escHtml(Array.isArray(h.aliases)?h.aliases.join(', '):(h.aliases||''))}}"></label><label class="wide">Персона/стиль<textarea data-host-field="persona">${{escHtml(h.persona||'')}}</textarea></label><label>OmniVoice ref audio<input data-host-field="omnivoice_ref_audio" value="${{escHtml(h.omnivoice_ref_audio||'')}}"></label><label>OmniVoice ref text<input data-host-field="omnivoice_ref_text" value="${{escHtml(h.omnivoice_ref_text||'')}}"></label><label class="wide">OmniVoice instruct<textarea data-host-field="omnivoice_instruct">${{escHtml(h.omnivoice_instruct||'')}}</textarea></label><label>Шаги OmniVoice<input data-host-field="omnivoice_steps" value="${{escHtml(h.omnivoice_steps||'')}}"></label><label>Скорость OmniVoice<input data-host-field="omnivoice_speed" value="${{escHtml(h.omnivoice_speed||'')}}"></label></div>`).join('') || '<div class="mini">Ведущих пока нет. Нажми “Добавить ведущего”.</div>';
-  box.querySelectorAll('[data-host-field]').forEach(inp=>{{ const ev = inp.type === 'checkbox' ? 'change' : 'input'; inp.addEventListener(ev,()=>{{ const card=inp.closest('.host-card'); const i=Number(card.dataset.hostIndex); const f=inp.dataset.hostField; if (!hostsData[i]) return; if (f==='aliases') hostsData[i][f]=inp.value.split(',').map(x=>x.trim()).filter(Boolean); else if (f==='enabled') hostsData[i][f]=!!inp.checked; else hostsData[i][f]=inp.value; serializeHosts(); if (f === 'name') renderFavoriteHosts(); }}); }});
+  box.innerHTML = hostsData.map((h,i)=>`<div class="host-card" data-host-index="${{i}}"><h3 class="host-card-head"><label class="host-title-switch"><input type="checkbox" data-host-field="enabled" ${{h.enabled === false ? '' : 'checked'}}><span class="switch-ui" aria-hidden="true"></span><span>Ведущий ${{i+1}}: ${{escHtml(h.name||'без имени')}}</span></label><button type="button" class="host-remove" data-i="${{i}}">Удалить</button></h3><label>Имя<input data-host-field="name" value="${{escHtml(h.name||'')}}"></label><label>Псевдонимы через запятую<input data-host-field="aliases" value="${{escHtml(Array.isArray(h.aliases)?h.aliases.join(', '):(h.aliases||''))}}"></label><label><span><input type="checkbox" data-host-field="intro_enabled" ${{h.intro_enabled === false ? '' : 'checked'}}> Участвует во вступлении</span></label><label><span><input type="checkbox" data-host-field="regular_enabled" ${{h.regular_enabled === false ? '' : 'checked'}}> Участвует в обычном эфире</span></label><label>Частота появления<input type="number" min="0.01" max="20" step="0.05" data-host-field="air_weight" value="${{escHtml(h.air_weight ?? 1)}}"></label><label class="wide">Персона/стиль<textarea data-host-field="persona">${{escHtml(h.persona||'')}}</textarea></label><label>OmniVoice ref audio<input data-host-field="omnivoice_ref_audio" value="${{escHtml(h.omnivoice_ref_audio||'')}}"></label><label>OmniVoice ref text<input data-host-field="omnivoice_ref_text" value="${{escHtml(h.omnivoice_ref_text||'')}}"></label><label class="wide">OmniVoice instruct<textarea data-host-field="omnivoice_instruct">${{escHtml(h.omnivoice_instruct||'')}}</textarea></label><label>Шаги OmniVoice<input data-host-field="omnivoice_steps" value="${{escHtml(h.omnivoice_steps||'')}}"></label><label>Скорость OmniVoice<input data-host-field="omnivoice_speed" value="${{escHtml(h.omnivoice_speed||'')}}"></label></div>`).join('') || '<div class="mini">Ведущих пока нет. Нажми “Добавить ведущего”.</div>';
+  box.querySelectorAll('[data-host-field]').forEach(inp=>{{ const ev = inp.type === 'checkbox' ? 'change' : 'input'; inp.addEventListener(ev,()=>{{ const card=inp.closest('.host-card'); const i=Number(card.dataset.hostIndex); const f=inp.dataset.hostField; if (!hostsData[i]) return; if (f==='aliases') hostsData[i][f]=inp.value.split(',').map(x=>x.trim()).filter(Boolean); else if (inp.type==='checkbox') hostsData[i][f]=!!inp.checked; else if (f==='air_weight') hostsData[i][f]=Number(inp.value) || 1; else hostsData[i][f]=inp.value; serializeHosts(); }}); }});
   box.querySelectorAll('.host-remove').forEach(btn=>btn.onclick=()=>{{ hostsData.splice(Number(btn.dataset.i),1); serializeHosts(); renderHostsEditor(); }});
   serializeHosts();
-  renderFavoriteHosts();
 }}
 document.querySelectorAll('input,select,textarea').forEach(el => {{ el.addEventListener('input', refreshResetButtons); el.addEventListener('change', refreshResetButtons); }});
-if (byId('addHostBtn')) byId('addHostBtn').onclick = () => {{ hostsData.push({{name:'Новый ведущий', enabled:true, aliases:[], persona:'живой радиоведущий', omnivoice_ref_audio:'', omnivoice_ref_text:'', omnivoice_instruct:''}}); renderHostsEditor(); }};
+if (byId('addHostBtn')) byId('addHostBtn').onclick = () => {{ hostsData.push({{name:'Новый ведущий', enabled:true, intro_enabled:true, regular_enabled:true, air_weight:1, aliases:[], persona:'живой радиоведущий', omnivoice_ref_audio:'', omnivoice_ref_text:'', omnivoice_instruct:''}}); renderHostsEditor(); }};
 if (byId('resetHostsBtn')) byId('resetHostsBtn').onclick = () => {{ hostsData = JSON.parse(JSON.stringify(DEFAULTS.hosts || [])); renderHostsEditor(); }};
 renderHostsEditor();
 refreshDependencyStates();
+async function loadModelChoices() {{
+  const health = document.querySelector('.model-health') || document.createElement('div');
+  health.className = 'model-health';
+  if (!health.isConnected) {{
+    const lmPanel = document.querySelector('[data-panel="lm"] .grid');
+    if (lmPanel) lmPanel.prepend(health);
+  }}
+  try {{
+    const r = await fetch('/api/models?ts=' + Date.now());
+    const data = await r.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    MODEL_FIELDS.forEach(name => {{
+      const old = document.querySelector(`[name="${{name}}"]`);
+      if (!old) return;
+      const selected = old.value || 'local-model';
+      const select = old.tagName === 'SELECT' ? old : document.createElement('select');
+      if (select !== old) [...old.attributes].forEach(attr => select.setAttribute(attr.name, attr.value));
+      const values = ['local-model', ...models];
+      if (!values.includes(selected)) values.push(selected);
+      select.innerHTML = values.map(value => `<option value="${{escHtml(value)}}"${{value === selected ? ' selected' : ''}}>${{escHtml(value)}}${{value === selected && !models.includes(value) && value !== 'local-model' ? ' — не загружена' : ''}}</option>`).join('');
+      if (select !== old) old.replaceWith(select);
+    }});
+    health.textContent = models.length ? `LM Studio: доступно моделей — ${{models.length}}` : 'LM Studio не вернула список моделей';
+    health.classList.toggle('ok', models.length > 0);
+    health.classList.toggle('bad', models.length === 0);
+    refreshDependencyStates();
+  }} catch (err) {{
+    health.textContent = 'LM Studio недоступна: список моделей не получен';
+    health.classList.add('bad');
+  }}
+}}
+loadModelChoices();
+if (byId('refreshModelsBtn')) byId('refreshModelsBtn').onclick = async () => {{ await loadModelChoices(); say('Список моделей LM Studio обновлён'); }};
 document.querySelectorAll('.reset-key').forEach(btn => btn.onclick = async (e) => {{ e.preventDefault(); e.stopPropagation(); const key = btn.dataset.key; try {{ const j = await post('/api/config/reset_key', {{key}}); applyValue(key, j.value); refreshResetButtons(); await refresh(); say('Параметр сброшен: ' + key); }} catch(err) {{ say('Ошибка сброса: ' + err.message); }} }});
 function refreshPlayerState() {{
   const live = !!player && !player.paused && !player.ended && !!player.currentSrc;
@@ -515,30 +559,77 @@ function refreshPlayerState() {{
   const btn = byId('playBtn');
   if (btn) {{
     btn.classList.toggle('is-live', live);
-    btn.textContent = live ? 'Пауза' : 'Слушать';
+    btn.textContent = live ? 'Ⅱ' : '▶';
+    btn.setAttribute('aria-label', live ? 'Поставить эфир на паузу' : 'Воспроизвести эфир');
     btn.title = live ? 'Поставить локальный плеер на паузу' : 'Подключиться к локальному потоку';
   }}
-  setText('playerState', live ? 'подключено' : 'не подключено');
+  if (!live) setText('playerState', player && player.currentSrc ? 'пауза' : 'не подключено');
+  updatePlayerTimeline();
+}}
+function playerRange() {{
+  if (!player) return null;
+  for (const ranges of [player.seekable, player.buffered]) {{
+    if (!ranges || !ranges.length) continue;
+    for (let index = ranges.length - 1; index >= 0; index--) {{
+      const start = ranges.start(index), end = ranges.end(index);
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) return {{start,end}};
+    }}
+  }}
+  return null;
+}}
+function formatBehind(seconds) {{
+  const value = Math.max(0, Math.round(seconds || 0));
+  const mins = Math.floor(value / 60);
+  const secs = String(value % 60).padStart(2,'0');
+  return mins ? `-${{mins}}:${{secs}}` : `-0:${{secs}}`;
+}}
+function updatePlayerTimeline() {{
+  const seek = byId('playerSeek'), label = byId('playerTime'), liveBtn = byId('liveEdgeBtn');
+  if (!seek || !label || !player) return;
+  const range = playerRange();
+  if (!range || !Number.isFinite(range.start) || !Number.isFinite(range.end) || range.end <= range.start) {{
+    seek.disabled = true; seek.min = 0; seek.max = 0; seek.value = 0; label.textContent = 'Эфир';
+    if (liveBtn) liveBtn.classList.remove('is-behind');
+    return;
+  }}
+  const current = Math.min(range.end, Math.max(range.start, Number(player.currentTime) || range.end));
+  const behind = Math.max(0, range.end - current);
+  seek.disabled = false; seek.min = String(range.start); seek.max = String(range.end); seek.value = String(current);
+  label.textContent = behind > 8 ? formatBehind(behind) : 'Эфир';
+  if (liveBtn) liveBtn.classList.toggle('is-behind', behind > 8);
+  if (!player.paused) setText('playerState', behind > 8 ? `в буфере ${{formatBehind(behind)}}` : 'в эфире');
 }}
 if (player) {{
-  ['play','pause','ended','emptied','error','loadeddata'].forEach(ev => player.addEventListener(ev, refreshPlayerState));
+  ['play','pause','ended','emptied','error','loadeddata','progress','durationchange','timeupdate'].forEach(ev => player.addEventListener(ev, refreshPlayerState));
 }}
 if (byId('playBtn')) byId('playBtn').onclick = () => {{
   if (!player.src) player.src = '/stream.mp3?client=panel&t=' + Date.now();
   if (!player.paused && !player.ended) player.pause(); else player.play().finally(refreshPlayerState);
   refreshPlayerState();
 }};
-if (byId('playerVolume')) byId('playerVolume').oninput = (e) => {{ if (player) player.volume = Number(e.target.value) || 0; }};
-if (byId('stopBtn')) byId('stopBtn').onclick = () => {{ player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); }};
+const volumeControl = byId('playerVolume');
+if (volumeControl) {{
+  const savedVolume = Number(localStorage.getItem('aiTruckRadio.playerVolume'));
+  const initialVolume = Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 1;
+  volumeControl.value = String(initialVolume);
+  if (player) player.volume = initialVolume;
+  volumeControl.oninput = (e) => {{
+    const value = Math.max(0, Math.min(1, Number(e.target.value)));
+    if (player) player.volume = value;
+    localStorage.setItem('aiTruckRadio.playerVolume', String(value));
+  }};
+}}
+if (byId('playerSeek')) byId('playerSeek').oninput = (e) => {{ if (player && !e.target.disabled) {{ player.currentTime = Number(e.target.value); updatePlayerTimeline(); }} }};
+if (byId('liveEdgeBtn')) byId('liveEdgeBtn').onclick = () => {{ const range = playerRange(); if (player && range) {{ player.currentTime = Math.max(range.start, range.end - 0.15); player.play().finally(refreshPlayerState); }} }};
 if (byId('playerCollapseBtn')) byId('playerCollapseBtn').onclick = () => {{
   const dock = byId('playerDock'); if (!dock) return;
   dock.classList.toggle('is-collapsed');
-  byId('playerCollapseBtn').textContent = dock.classList.contains('is-collapsed') ? '⌃' : '⌄';
 }};
 if (byId('radioStartBtn')) byId('radioStartBtn').onclick = async () => {{ say('Запускаю радио...'); await post('/api/radio/start', {{clean: cleanFlag()}}); await refresh(); say('Радио включено'); }};
 if (byId('radioStopBtn')) byId('radioStopBtn').onclick = async () => {{ say('Останавливаю радио...'); await post('/api/radio/stop'); player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); await refresh(); say('Радио выключено'); }};
 if (byId('radioRestartBtn')) byId('radioRestartBtn').onclick = async () => {{ say('Перезапускаю радио...'); await post('/api/radio/restart', {{clean: cleanFlag()}}); player.pause(); player.removeAttribute('src'); player.load(); refreshPlayerState(); await refresh(); say('Радио перезапущено'); }};
 if (byId('clearGenBtn')) byId('clearGenBtn').onclick = async () => {{ const j = await post('/api/clear_generated'); await refresh(); say(`Очищено: ${{j.files ?? 0}} файлов, ${{j.dirs ?? 0}} папок`); }};
+if (byId('clearEntertainmentHistoryBtn')) byId('clearEntertainmentHistoryBtn').onclick = async () => {{ const j = await post('/api/entertainment/history/clear'); await refresh(); say(`Журнал рубрик очищен: ${{j.removed ?? 0}} записей`); }};
 if (byId('skipBtn')) byId('skipBtn').onclick = async () => {{ await post('/api/skip'); say('Запрошен следующий трек'); }};
 async function rescan() {{ const j = await post('/api/rescan'); await refresh(); say(`Музыка пересканирована: ${{j.music_count ?? ''}} файлов`); }}
 if (byId('rescanBtn')) byId('rescanBtn').onclick = rescan; if (byId('rescanBtn2')) byId('rescanBtn2').onclick = rescan;
@@ -552,11 +643,10 @@ async function buildTrackProfiles() {{ const force = document.querySelector('[na
 ['showPlanUseBtn','modePlanBtn'].forEach(id => {{ const el = byId(id); if (el) el.onclick = useShowPlan; }});
 ['liveModeBtn','modeLiveBtn'].forEach(id => {{ const el = byId(id); if (el) el.onclick = liveMode; }});
 ['trackProfileBtn','trackProfileBtn2'].forEach(id => {{ const el = byId(id); if (el) el.onclick = buildTrackProfiles; }});
-if (byId('cfgForm')) byId('cfgForm').onsubmit = async (e) => {{ e.preventDefault(); serializeHosts(); serializeFavoriteHosts(); say('Сохраняю настройки...'); const fd = new FormData(e.target); const r = await fetch('/api/save_config', {{method:'POST', body:new URLSearchParams(fd)}}); const j = await r.json().catch(()=>({{ok:false}})); refreshResetButtons(); await refresh(); say(j.ok === false ? 'Не удалось сохранить настройки' : 'Настройки сохранены'); }};
+if (byId('cfgForm')) byId('cfgForm').onsubmit = async (e) => {{ e.preventDefault(); serializeHosts(); say('Сохраняю настройки...'); const fd = new FormData(e.target); const r = await fetch('/api/save_config', {{method:'POST', body:new URLSearchParams(fd)}}); const j = await r.json().catch(()=>({{ok:false}})); refreshResetButtons(); await refresh(); say(j.ok === false ? 'Не удалось сохранить настройки' : 'Настройки сохранены'); }};
 function renderPlanPreview(items) {{
   const box = byId('planPreview'); if (!box) return;
-  if (!items || !items.length) {{ box.innerHTML = '<div class="mini">План ещё не сгенерирован. Нажми “Сгенерировать подготовленный эфир”.</div>'; return; }}
-  box.innerHTML = items.map(it => {{
+  const html = (!items || !items.length) ? '<div class="mini">План ещё не сгенерирован. Нажми “Сгенерировать подготовленный эфир”.</div>' : items.map(it => {{
     const kind = it.kind === 'speech' ? '🎙 речь' : '🎵 музыка';
     const dur = it.duration_sec ? Math.round(it.duration_sec) + 'с' : '';
     const escHtml = (v) => String(v||'').replace(/[&<>]/g, c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]));
@@ -564,16 +654,18 @@ function renderPlanPreview(items) {{
     const title = escHtml(it.title||'');
     return `<div class="plan-item ${{it.kind}}"><div>#${{it.idx}}</div><div>${{kind}}</div><div><div class="title">${{title}}</div>${{txt}}</div><div class="mini">${{dur}}</div></div>`;
   }}).join('');
+  if (box.dataset.renderedHtml !== html) {{ box.innerHTML = html; box.dataset.renderedHtml = html; }}
 }}
 async function refresh() {{
   const r = await fetch('/status.json?ts=' + Date.now()); const s = await r.json();
+  window.__lastRadioStatus = s;
   setText('now', s.now_playing || ''); setText('kind', s.current_kind || ''); setText('clients', s.active_clients); setText('musicCount', s.music_count); setText('timeText', s.time_text || ''); setText('airMode', s.air_mode || (s.show_plan_enabled ? 'Плановый' : 'Live'));
-  setText('playerTrack', s.now_playing || 'Радио остановлено'); setText('playerSub', 'локальный поток · ' + (s.air_mode || (s.show_plan_enabled ? 'Плановый' : 'Live')));
+  setText('playerTrack', s.radio_running ? (s.now_playing || '') : '');
   setText('usedModel', s.used_lm_model || ''); setText('preparedStatus', s.prepared_status || ''); setText('showPlanStatus', s.show_plan_status || ''); document.querySelectorAll('.showPlanStatusText').forEach(el=>el.textContent=s.show_plan_status||''); setText('trackProfileStatus', s.track_profile_status || ''); setText('entertainmentStatus', s.entertainment_status || ''); setText('lastError', s.last_error || 'нет'); setText('hostText', s.last_host_text || 'пока нет');
   const pp = s.show_plan_progress || {{}}; const tp = s.track_profile_progress || {{}}; setProgress('showPlanFill', pp.percent || (s.show_plan_generating ? 18 : 0)); document.querySelectorAll('.showPlanFillBar').forEach(el=>el.style.width=Math.max(0,Math.min(100,Number(pp.percent || (s.show_plan_generating ? 18 : 0))||0))+'%'); setProgress('trackProfileFill', tp.percent || (s.track_profile_building ? 12 : 0)); setText('showPlanDetail', pp.detail || (s.show_plan_generating ? 'идёт подготовка...' : '')); document.querySelectorAll('.showPlanDetailText').forEach(el=>el.textContent=pp.detail || (s.show_plan_generating ? 'идёт подготовка...' : '')); setText('trackProfileDetail', tp.detail || (s.track_profile_building ? 'идёт анализ...' : '')); renderPlanPreview(s.show_plan_preview || []);
   const ff = byId('ffmpeg'); if (ff) {{ ff.textContent = s.ffmpeg_ok ? 'найден' : 'НЕ найден'; ff.className = s.ffmpeg_ok ? 'ok' : 'bad'; }} const fp = byId('ffprobe'); if (fp) {{ fp.textContent = s.ffprobe_ok ? 'найден' : 'не найден'; fp.className = s.ffprobe_ok ? 'ok' : 'warn'; }}
-  const badge = byId('runBadge'); if (badge) {{ badge.textContent = s.radio_running ? '● В эфире' : '● Остановлено'; badge.className = 'chip ' + (s.radio_running ? 'live' : 'stopped'); }}
-  if (byId('radioStartBtn')) byId('radioStartBtn').disabled = !!s.radio_running; if (byId('radioStopBtn')) byId('radioStopBtn').disabled = !s.radio_running;
+  const badge = byId('runBadge'); if (badge) {{ badge.textContent = s.radio_running ? '● В эфире' : (s.radio_starting ? '● Запускается' : '● Остановлено'); badge.className = 'chip ' + (s.radio_running ? 'live' : 'stopped'); }}
+  if (byId('radioStartBtn')) byId('radioStartBtn').disabled = !!(s.radio_running || s.radio_starting); if (byId('radioStopBtn')) byId('radioStopBtn').disabled = !(s.radio_running || s.radio_starting);
   const planBtn = byId('modePlanBtn'); const liveBtn = byId('modeLiveBtn'); if (planBtn && liveBtn) {{ planBtn.classList.toggle('secondary', !s.show_plan_enabled); liveBtn.classList.toggle('secondary', !!s.show_plan_enabled); }}
 }}
 
@@ -581,8 +673,8 @@ const oldRefreshCompact = refresh;
 refresh = async function() {{
   await oldRefreshCompact();
   try {{
-    const r = await fetch('/status.json?ts=' + Date.now()); const s = await r.json();
-    setText('runMini', s.radio_running ? 'эфир идёт' : 'эфир выключен');
+    const s = window.__lastRadioStatus || {{}};
+    setText('runMini', s.radio_running ? 'эфир идёт' : (s.radio_starting ? 'эфир запускается' : 'эфир выключен'));
     const planBtn=byId('modePlanBtn'), liveBtn=byId('modeLiveBtn');
     if (planBtn && liveBtn) {{
       planBtn.classList.toggle('secondary', !s.show_plan_enabled);

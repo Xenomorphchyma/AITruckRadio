@@ -27,4 +27,9 @@ use_existing_omnivoice_env.bat
 
 Для GitHub локальные окружения, модели, музыка, reference-голоса, `config.json`, runtime-кэши и архивы релизов исключены через `.gitignore`.
 
-Карта модулей после распила: `docs/ARCHITECTURE_RU.md`.
+Документация:
+
+- карта модулей: `docs/ARCHITECTURE_RU.md`;
+- агент рубрик и защита от повторов: `docs/ENTERTAINMENT_AGENT_RU.md`;
+- текущие технические пробелы: `docs/PROJECT_GAPS_RU.md`;
+- исследование треков: `docs/TRACK_PROFILES_RU.md`.

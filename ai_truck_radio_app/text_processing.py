@@ -96,6 +96,16 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
     if not text:
         return text
 
+    stage_aliases = {
+        r"усмех\w*|хихик\w*|сме[её]тся|смешок|со смехом": "[laughter]",
+        r"вздых\w*|со вздохом": "[sigh]",
+        r"удивл[её]нно|с удивлением": "[surprise-ah]",
+        r"недовольн\w*|ворчит": "[dissatisfaction-hnn]",
+    }
+    for pattern, tag in stage_aliases.items():
+        text = re.sub(rf"\(\s*(?:{pattern})\s*\)", tag if enabled else "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\([^()\n]{1,100}\)", "", text)
+
     def repl(match: re.Match[str]) -> str:
         raw = match.group(0)
         inner = match.group(1).strip().lower()
@@ -297,6 +307,15 @@ def normalize_generated_radio_text(text: str) -> str:
     return text
 
 
+def soften_tts_exclamations(text: str) -> str:
+    """Prevent reference voices from turning every exclamation into a shout."""
+    if not text:
+        return text
+    text = re.sub(r"!{2,}", ".", text)
+    text = re.sub(r"(?<!\?)!", ".", text)
+    return re.sub(r"\.{2,}", ".", text)
+
+
 
 
 def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = None) -> str:
@@ -308,7 +327,7 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
     text = re.sub(r"<0x[0-9A-Fa-f]{2,8}>", "", text)
     text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
     text = re.sub(r"\*+\s*(В конце блока|Включается|Подводит|После этой речи|Музыка включается).*?(?:\*+|$)", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"\([^\n]{0,160}(улыб|мягко|энергично|подводит|ремарка|сме[её]тся|включаем|включается|следующий трек)[^\n]{0,160}\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\([^\n]{0,160}(улыб|мягко|энергично|подводит|ремарка|включаем|включается|следующий трек)[^\n]{0,160}\)", "", text, flags=re.IGNORECASE)
     bad_prefix = re.compile(r"^(Стиль станции|План блока|Главная тема блока|ПРЕДЫДУЩИЙ ТРЕК|СЛЕДУЮЩИЙ ТРЕК|Инструкция|Правила|Формат|Системный промпт|Дополнительных новостей)\s*[:：]", re.IGNORECASE)
     lines = []
     for raw in text.splitlines():
@@ -332,6 +351,16 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
     if host_names:
         allowed = list(dict.fromkeys(host_names))
         forbidden = [x for x in dict.fromkeys(all_host_names) if x not in allowed]
+        all_markers = "|".join(re.escape(x) for x in dict.fromkeys(all_host_names) if x)
+        for bad_name in forbidden:
+            bad_re = re.escape(bad_name)
+            if all_markers:
+                text = re.sub(
+                    rf"(?<![\wА-Яа-яЁё]){bad_re}\s*[:：]\s*.*?(?=(?<![\wА-Яа-яЁё])(?:{all_markers})\s*[:：]|$)",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
+                )
         for name in allowed:
             name_re = re.escape(name)
             text = re.sub(rf"({name_re}\s*[:：])\s*\1+", rf"\1 ", text)
@@ -430,6 +459,17 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
         out.append("это обычное музыкальное радио, без игровых и автомобильных ролевых образов")
     if re.search(r"\([^\n]{0,160}(включается|включаем|следующий трек|подводит)[^\n]{0,160}\)|\*[^\n]{0,160}(включается|подводит|следующий трек)[^\n]{0,160}\*", str(text or ""), flags=re.IGNORECASE):
         out.append("нельзя писать сценические ремарки вроде 'включается трек'")
+    weather_city = str(ctx.get("weather_city") or "").strip()
+    if weather_city and not re.search(r"москв", weather_city, flags=re.IGNORECASE) and re.search(r"\bмоскв\w*", low, flags=re.IGNORECASE):
+        out.append(f"город эфира и погоды — {weather_city}; Москву называть нельзя")
+    expected_horoscope = ctx.get("horoscope_expected") or []
+    if expected_horoscope:
+        if re.search(r"\bпрогноз\s+(?:был|будет)\s+(?:про|о)\b", low, flags=re.IGNORECASE):
+            out.append("гороскоп нужно читать как настоящий прогноз, а не пересказывать его тему")
+        for item in expected_horoscope:
+            sign = str(item.get("sign") or "").strip() if isinstance(item, dict) else ""
+            if sign and not re.search(rf"(?<!\w){re.escape(sign)}\s*:", str(text or ""), flags=re.IGNORECASE):
+                out.append(f"в гороскопе отсутствует точная строка «{sign}: прогноз»")
     return out
 
 
@@ -452,6 +492,9 @@ def repair_time_context_text(text: str, ctx: Optional[Dict[str, Any]] = None) ->
         text = re.sub(r"(?i)\bэтой\s+ночью\b", "сегодня", text)
         text = re.sub(r"(?i)\bночной\s+эфир\b", "дневной эфир", text)
         text = re.sub(r"(?i)\bвечерний\s+эфир\b", "дневной эфир", text)
+    weather_city = str(ctx.get("weather_city") or "").strip()
+    if weather_city and not re.search(r"москв", weather_city, flags=re.IGNORECASE):
+        text = re.sub(r"(?i)\bмоскв(?:а|е|ы|ой|у)\b", weather_city, text)
     return text
 
 def strip_spoken_host_names(text: str, host_names: List[str]) -> str:

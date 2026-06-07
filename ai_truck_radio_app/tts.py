@@ -558,9 +558,12 @@ class TTS:
                 log(f"TTS: контроль текста — исходник {src_len} симв, в озвучку {out_len} симв, ratio={ratio:.2f}")
             min_ratio = float(self.cfg.get("tts_parse_validation_min_ratio", 0.86) or 0.86)
             if src_len > 40 and ratio < min_ratio:
-                log("TTS: предупреждение — парсер мог потерять часть слов; отдаю весь текст одному голосу, чтобы ничего не пропало")
-                fallback_host = segments[0][0] if segments else None
-                segments = [(fallback_host, trim_to_complete_sentence(src_plain or text))]
+                if len(segments) <= 1:
+                    log("TTS: парсер мог потерять часть одиночной реплики; использую полный текст выбранного ведущего")
+                    fallback_host = segments[0][0] if segments else None
+                    segments = [(fallback_host, trim_to_complete_sentence(src_plain or text))]
+                else:
+                    log("TTS: контроль длины диалога не пройден, но разделение по голосам сохранено, чтобы реплики не ушли первому ведущему")
         host_cfg_by_name = {
             str(hst.get("name", "")).strip().lower(): hst
             for hst in hosts
