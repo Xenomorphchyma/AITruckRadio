@@ -52,6 +52,8 @@ def load_items(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         items = data.get("items") if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            return []
         return [item for item in items if isinstance(item, dict) and item.get("key")]
     except FileNotFoundError:
         return []

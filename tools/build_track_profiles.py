@@ -1,10 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
+
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from track_profile_agent import research_track
+
+DEEZER_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
+ITUNES_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 ROOT = Path(__file__).resolve().parents[1]
 MUSICBRAINZ_DISABLED_UNTIL = 0.0
@@ -13,6 +23,13 @@ WIKIPEDIA_DISABLED_UNTIL = 0.0
 WIKIPEDIA_CACHE = {}
 WIKIDATA_CACHE = {}
 MUSICBRAINZ_CACHE = {}
+
+
+def require_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Only http/https URLs are allowed: {url!r}")
+    return parsed.geturl()
 MUSIC_EXTS = {'.mp3','.flac','.wav','.ogg','.oga','.m4a','.aac','.opus','.wma'}
 GENERIC_TITLE_WORDS = {
     'carousel', 'song', 'песня', 'music', 'музыка', 'track', 'трек', 'original', 'version', 'remix',
@@ -118,16 +135,18 @@ def parse_name(path: Path) -> Tuple[str, str]:
 
 
 def http_json(url: str, *, headers: Dict[str,str] | None = None, timeout: int = 12) -> Dict[str,Any]:
+    url = require_http_url(url)
     req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
         return json.loads(r.read().decode('utf-8', errors='replace'))
 
 
 def request_json(method: str, url: str, payload: Dict[str,Any], timeout: int=90) -> Dict[str,Any]:
+    url = require_http_url(url)
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers={'Content-Type':'application/json'}, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
             return json.loads(r.read().decode('utf-8'))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode('utf-8', errors='replace')[:2000]
@@ -400,7 +419,6 @@ def lookup_wikidata(cfg: Dict[str,Any], artist: str, title: str) -> Dict[str,Any
                 desc = str(ent.get('description') or '')
                 hay = (label + ' ' + desc).lower()
                 artist_l = (artist or '').lower().strip()
-                title_l = (title or '').lower().strip()
                 if artist_l and artist_l not in hay and label.lower() != artist_l:
                     continue
                 if any(bad in hay for bad in ['телеканал', 'tv channel', 'игра', 'film', 'фильм']) and artist_l not in hay:
@@ -428,7 +446,7 @@ def lookup_deezer(cfg: Dict[str,Any], artist: str, title: str) -> Dict[str,Any]:
     if not (artist or title):
         return {}
     cache_key = (artist or '', title or '')
-    if cache_key in globals().setdefault('DEEZER_CACHE', {}):
+    if cache_key in DEEZER_CACHE:
         return DEEZER_CACHE[cache_key]
     timeout = int(cfg.get('track_profiles_web_timeout_sec', 12) or 12)
     q = ' '.join(x for x in [artist, title] if x).strip()
@@ -481,7 +499,7 @@ def lookup_itunes(cfg: Dict[str,Any], artist: str, title: str) -> Dict[str,Any]:
     if not (artist or title):
         return {}
     cache_key = (artist or '', title or '')
-    if cache_key in globals().setdefault('ITUNES_CACHE', {}):
+    if cache_key in ITUNES_CACHE:
         return ITUNES_CACHE[cache_key]
     timeout = int(cfg.get('track_profiles_web_timeout_sec', 12) or 12)
     q = ' '.join(x for x in [artist, title] if x).strip()
@@ -980,13 +998,21 @@ def main() -> int:
         existing = profiles.get(key)
         if not force and isinstance(existing, dict) and (existing.get('description') or existing.get('radio_angle')):
             sources = existing.get('sources') if isinstance(existing.get('sources'), list) else []
-            web_meta = existing.get('_original_web_meta') if isinstance(existing.get('_original_web_meta'), dict) else {}
-            if not web_meta and isinstance(existing.get('_web_meta'), dict):
-                web_meta = existing.get('_web_meta')
-            has_wiki = bool((web_meta.get('wikipedia') or {}).get('url')) if isinstance(web_meta.get('wikipedia'), dict) else False
-            has_wd = bool((web_meta.get('wikidata') or {}).get('url')) if isinstance(web_meta.get('wikidata'), dict) else False
-            has_deezer = bool((web_meta.get('deezer') or {}).get('link')) if isinstance(web_meta.get('deezer'), dict) else False
-            has_itunes = bool((web_meta.get('itunes') or {}).get('url')) if isinstance(web_meta.get('itunes'), dict) else False
+            web_meta: Dict[str, Any] = {}
+            original_web_meta = existing.get('_original_web_meta')
+            legacy_web_meta = existing.get('_web_meta')
+            if isinstance(original_web_meta, dict):
+                web_meta = original_web_meta
+            elif isinstance(legacy_web_meta, dict):
+                web_meta = legacy_web_meta
+            wikipedia_meta = web_meta.get('wikipedia')
+            wikidata_meta = web_meta.get('wikidata')
+            deezer_meta = web_meta.get('deezer')
+            itunes_meta = web_meta.get('itunes')
+            has_wiki = bool(wikipedia_meta.get('url')) if isinstance(wikipedia_meta, dict) else False
+            has_wd = bool(wikidata_meta.get('url')) if isinstance(wikidata_meta, dict) else False
+            has_deezer = bool(deezer_meta.get('link')) if isinstance(deezer_meta, dict) else False
+            has_itunes = bool(itunes_meta.get('url')) if isinstance(itunes_meta, dict) else False
             has_any_source = bool(sources or has_wiki or has_wd or has_deezer or has_itunes)
             # Важный режим: если профиль уже имеет sources/_original_web_meta, не трогаем его только из-за
             # web_fact='нет надёжного факта'. Иначе оно повторно лезло в сеть на уже описанные треки.

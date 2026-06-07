@@ -1,0 +1,53 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 140
+extend-exclude = [
+  ".venv",
+  ".venv_omnivoice",
+  ".venv_qwen3_tts",
+  ".venv_f5_tts",
+  ".hf_cache",
+  ".torch_cache",
+  "cache",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E701", "E702"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+pythonPlatform = "Windows"
+typeCheckingMode = "basic"
+include = ["ai_truck_radio.py", "ai_truck_radio_app", "tools"]
+exclude = [
+  ".venv",
+  ".venv_omnivoice",
+  ".venv_qwen3_tts",
+  ".venv_f5_tts",
+  ".hf_cache",
+  ".torch_cache",
+  "cache",
+]
+extraPaths = [".", "tools"]
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["ai_truck_radio_app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.bandit]
+exclude_dirs = [".venv", ".venv_omnivoice", ".venv_qwen3_tts", ".venv_f5_tts", ".hf_cache", ".torch_cache", "cache", "tests"]
+# These findings are expected for a local radio engine: non-cryptographic scheduling,
+# command-list subprocesses without shell=True, and best-effort cleanup paths.
+skips = ["B110", "B311", "B404", "B603"]

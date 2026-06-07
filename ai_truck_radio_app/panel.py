@@ -39,9 +39,12 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         # type=number в русской Windows/Chrome не даёт нормально сохранять 0,24.
         # Поэтому это текстовое поле с inputmode=decimal; сервер принимает и точку, и запятую.
         attrs = ['inputmode="decimal"', 'data-number="1"']
-        if minv != "": attrs.append(f'data-min="{esc(minv)}"')
-        if maxv != "": attrs.append(f'data-max="{esc(maxv)}"')
-        if step != "": attrs.append(f'data-step="{esc(step)}"')
+        if minv != "":
+            attrs.append(f'data-min="{esc(minv)}"')
+        if maxv != "":
+            attrs.append(f'data-max="{esc(maxv)}"')
+        if step != "":
+            attrs.append(f'data-step="{esc(step)}"')
         return f'<label class="setting">{label_for(key,label,tip)}<input name="{esc(key)}" type="text" {" ".join(attrs)} value="{esc(cfg.get(key, default_config.get(key, "")))}"></label>'
 
     def checkbox(key: str, label: str, tip: str = "") -> str:
@@ -285,8 +288,6 @@ def render_panel(engine: Any, cfg: Dict[str, Any], snap: Dict[str, Any], default
         checkbox("hotkey_enabled", "Глобальный хоткей Ctrl+Alt+N", "Следующий трек, если Windows разрешила зарегистрировать хоткей."),
     ])
 
-    stream_url = esc(snap.get("stream_url", ""))
-    ets2_line = esc(snap.get("ets2_line", ""))
     defaults_json = json.dumps(default_config, ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="ru">

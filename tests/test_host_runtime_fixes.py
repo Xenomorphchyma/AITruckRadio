@@ -1,6 +1,7 @@
 import random
 import unittest
 
+from ai_truck_radio_app.config import require_http_url
 from ai_truck_radio_app.engine import RadioEngine
 from ai_truck_radio_app.text_processing import (
     context_violations_for_host_text,
@@ -11,6 +12,11 @@ from ai_truck_radio_app.text_processing import (
 
 
 class HostRuntimeFixesTests(unittest.TestCase):
+    def test_only_http_urls_are_accepted(self):
+        self.assertEqual("http://127.0.0.1:1234/v1", require_http_url("http://127.0.0.1:1234/v1"))
+        with self.assertRaises(ValueError):
+            require_http_url("file:///C:/secret.txt")
+
     def make_engine(self):
         engine = RadioEngine.__new__(RadioEngine)
         engine.cfg = {

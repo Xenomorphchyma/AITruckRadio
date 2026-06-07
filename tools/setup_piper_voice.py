@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,8 +46,11 @@ def run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
 
 
 def download(url: str, target: Path) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "huggingface.co":
+        raise ValueError(f"Unexpected Piper download URL: {url!r}")
     log(f"Downloading {target.name}...")
-    with urllib.request.urlopen(url, timeout=180) as r:
+    with urllib.request.urlopen(url, timeout=180) as r:  # nosec B310
         data = r.read()
     target.write_bytes(data)
     if target.stat().st_size < 1024:

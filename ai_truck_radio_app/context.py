@@ -17,6 +17,7 @@ from ai_truck_radio_app.config import (
     RUS_MONTHS,
     RUS_WEEKDAYS,
     log,
+    require_http_url,
 )
 
 
@@ -42,8 +43,9 @@ class WeatherClient:
         self.lock = threading.Lock()
 
     def _url_json(self, url: str, timeout: float) -> Dict[str, Any]:
+        url = require_http_url(url)
         req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             raw = resp.read().decode("utf-8", errors="replace")
         return json.loads(raw)
 
@@ -379,5 +381,4 @@ def exact_hour_announcement_text(cfg: Dict[str, Any], now_struct: Optional[time.
         display = hour if hour <= 12 else hour - 12
         human = f"ровно {display} часа {suffix}" if display in {2,3,4} else f"ровно {display} часов {suffix}"
     return f"Сейчас {human}. Можно один раз естественно проговорить время в эфире."
-
 

@@ -116,11 +116,13 @@ def _domain(url: str) -> str:
 
 
 def _fetch(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
+    if not _public_url(url):
+        raise ValueError("non-public or unsupported URL")
     req = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "ru,en;q=0.8"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec B310
         if not _public_url(response.geturl()):
             raise ValueError("redirected to a non-public URL")
         content_type = str(response.headers.get("Content-Type") or "").lower()

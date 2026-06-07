@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-from ai_truck_radio_app.config import RUS_MONTHS, RUS_WEEKDAYS, log
+from ai_truck_radio_app.config import RUS_MONTHS, RUS_WEEKDAYS, log, require_http_url
 from ai_truck_radio_app.text_processing import clean_host_text, sanitize_general_radio_text
 from ai_truck_radio_app.tracks import Track
 
@@ -33,13 +33,14 @@ class LMStudioClient:
         payload: Optional[Dict[str, Any]] = None,
         timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
+        url = require_http_url(url)
         data = None
         headers = {"Content-Type": "application/json"}
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=int(timeout or self.timeout)) as resp:
+            with urllib.request.urlopen(req, timeout=int(timeout or self.timeout)) as resp:  # nosec B310
                 raw = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1200]
@@ -358,5 +359,4 @@ class LMStudioClient:
         if self.cfg.get("tts_debug_log", True):
             log("LM Studio вернул черновик ведущих: " + " ".join(cleaned.split())[:500])
         return cleaned
-
 

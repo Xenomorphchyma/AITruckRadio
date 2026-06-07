@@ -29,6 +29,7 @@ from ai_truck_radio_app.config import (
     log,
     normalize_config,
     rel_path,
+    require_http_url,
     save_json,
 )
 from ai_truck_radio_app.context import (
@@ -564,11 +565,12 @@ class RadioEngine:
 
     def _fetch_web_text(self, url: str, timeout: Optional[int] = None) -> str:
         timeout = int(timeout or self.cfg.get('rubric_web_timeout_sec', 10) or 10)
+        url = require_http_url(url)
         req = urllib.request.Request(url, headers={
             'User-Agent': str(self.cfg.get('rubric_web_user_agent') or 'AITruckRadio/0.7 local radio'),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         })
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
             raw = r.read(350000).decode('utf-8', errors='replace')
         raw = re.sub(r'(?is)<script.*?</script>|<style.*?</style>|<noscript.*?</noscript>', ' ', raw)
         raw = re.sub(r'(?s)<[^>]+>', ' ', raw)
@@ -727,14 +729,18 @@ class RadioEngine:
                     timeout=int(self.cfg.get('entertainment_pack_timeout_sec', 90) or 90),
                 )
                 data = self._parse_json_object_from_text(txt)
-                if need_lm_hor and isinstance(data.get('horoscope'), list) and len(data.get('horoscope')) >= 6:
-                    pack['horoscope'] = data['horoscope'][:12]
-                if need_lm_riddles and isinstance(data.get('riddles'), list) and data.get('riddles'):
-                    pack['riddles'] = data['riddles'][:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
-                if isinstance(data.get('wrong_games'), list) and data.get('wrong_games'):
-                    pack['wrong_games'] = data['wrong_games'][:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
-                if isinstance(data.get('guest_stories'), list) and data.get('guest_stories'):
-                    pack['guest_stories'] = data['guest_stories'][:max(1, int(self.cfg.get('guest_story_count', 6) or 6))]
+                horoscope = data.get('horoscope')
+                riddles = data.get('riddles')
+                wrong_games = data.get('wrong_games')
+                guest_stories = data.get('guest_stories')
+                if need_lm_hor and isinstance(horoscope, list) and len(horoscope) >= 6:
+                    pack['horoscope'] = horoscope[:12]
+                if need_lm_riddles and isinstance(riddles, list) and riddles:
+                    pack['riddles'] = riddles[:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
+                if isinstance(wrong_games, list) and wrong_games:
+                    pack['wrong_games'] = wrong_games[:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
+                if isinstance(guest_stories, list) and guest_stories:
+                    pack['guest_stories'] = guest_stories[:max(1, int(self.cfg.get('guest_story_count', 6) or 6))]
                 self.entertainment_status = 'рубрики подготовлены через web/LM Studio'
             except Exception as e:
                 self.entertainment_status = 'рубрики взяты из fallback: веб/LM не успели ответить'
@@ -1400,7 +1406,8 @@ class RadioEngine:
         )
         ok = True
         try:
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("FFmpeg music process started without stdout")
             while not self.stop_event.is_set():
                 if self.skip_event.is_set():
                     ok = False
@@ -1526,7 +1533,8 @@ class RadioEngine:
         )
         ok = True
         try:
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("FFmpeg speech process started without stdout")
             while not self.stop_event.is_set():
                 if self.skip_event.is_set():
                     ok = False
@@ -1647,7 +1655,8 @@ class RadioEngine:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("FFmpeg planned item process started without stdout")
             while not self.stop_event.is_set():
                 chunk = proc.stdout.read(16 * 1024)
                 if not chunk:
@@ -1954,7 +1963,8 @@ class RadioEngine:
                     stderr=subprocess.STDOUT,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-                assert proc.stdout is not None
+                if proc.stdout is None:
+                    raise RuntimeError("Track profile process started without stdout")
                 tail: List[str] = []
                 for raw_line in proc.stdout:
                     line = raw_line.strip()
@@ -1965,7 +1975,9 @@ class RadioEngine:
                     log("TrackProfiles: " + line)
                     m = re.search(r"PROGRESS\s+(\d+)\s*/\s*(\d+)\s+(.*)$", line)
                     if m:
-                        cur = int(m.group(1)); total = max(1, int(m.group(2))); detail = m.group(3).strip()
+                        cur = int(m.group(1))
+                        total = max(1, int(m.group(2)))
+                        detail = m.group(3).strip()
                         self.track_profile_progress = {"current": cur, "total": total, "percent": int(cur * 100 / total), "detail": detail}
                         self.track_profile_status = f"описания музыки: {cur}/{total} — {detail}"
                     elif line.startswith("[TrackProfiles] analyzing:"):
@@ -2344,5 +2356,4 @@ class RadioEngine:
             "time_text": current_time_text(),
         })
         return snap
-
 

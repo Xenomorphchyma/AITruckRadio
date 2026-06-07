@@ -12,7 +12,6 @@ from omnivoice_render import (
     apply_ffmpeg_path,
     append_tail_silence,
     normalize_ru_tts_text,
-    read_text,
     sanitize_instruct,
 )
 

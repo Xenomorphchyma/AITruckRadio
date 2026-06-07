@@ -107,7 +107,6 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
     text = re.sub(r"\([^()\n]{1,100}\)", "", text)
 
     def repl(match: re.Match[str]) -> str:
-        raw = match.group(0)
         inner = match.group(1).strip().lower()
         normalized = f"[{inner}]"
         if enabled and normalized in OMNIVOICE_NONVERBAL_TAGS:
@@ -363,10 +362,10 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
                 )
         for name in allowed:
             name_re = re.escape(name)
-            text = re.sub(rf"({name_re}\s*[:：])\s*\1+", rf"\1 ", text)
+            text = re.sub(rf"({name_re}\s*[:：])\s*\1+", r"\1 ", text)
             for bad_name in forbidden:
                 bad_re = re.escape(bad_name)
-                text = re.sub(rf"({name_re}\s*[:：])\s*(?:{bad_re}\s*[:：]\s*)+", rf"\1 ", text)
+                text = re.sub(rf"({name_re}\s*[:：])\s*(?:{bad_re}\s*[:：]\s*)+", r"\1 ", text)
     prev = str(ctx.get("previous_track_name") or ctx.get("planned_previous_track") or "").lower()
     if not prev or "ничего" in prev or "ещё" in prev or "еще" in prev:
         text = re.sub(r"\b[Вв]\s+предыдущих\s+песнях[^.!?]*[.!?]", "", text)

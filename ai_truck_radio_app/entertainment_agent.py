@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ai_truck_radio_app.config import BASE_DIR, log
-from ai_truck_radio_app.entertainment_history import filter_unused, prompt_exclusions
+from ai_truck_radio_app.entertainment_history import filter_unused
 from ai_truck_radio_app.lmstudio import LMStudioClient
 from ai_truck_radio_app.web_research import read_page, search_pages
 
@@ -298,7 +298,7 @@ class EntertainmentAgent:
             ("riddles", "короткие загадки с ответами и вариантами для взрослых"),
             ("quiz", "простые вопросы викторины с однозначными ответами"),
         ]
-        pages: List[Dict[str, str]] = []
+        pages: List[Dict[str, Any]] = []
         seen = set()
         for topic, query in topics:
             topic_pages = 0
@@ -331,8 +331,6 @@ class EntertainmentAgent:
         research = self._research()
         total_evidence = int(self.cfg.get("entertainment_agent_total_evidence_chars", 16000) or 16000)
         max_items = max(1, int(self.cfg.get("entertainment_pack_max_items", 12) or 12))
-        exclusions = prompt_exclusions(self.cfg)
-        exclusion_text = "\n".join(f"- {item}" for item in exclusions) or "Нет."
         model = self._selected_model()
         topic_prompts = {
             "horoscope": (

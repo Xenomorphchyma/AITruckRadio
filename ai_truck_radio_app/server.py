@@ -47,7 +47,7 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
     class Handler(BaseHTTPRequestHandler):
         server_version = f"{APP_NAME}/{APP_VERSION}"
 
-        def log_message(self, fmt: str, *args: Any) -> None:
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
         def do_GET(self) -> None:

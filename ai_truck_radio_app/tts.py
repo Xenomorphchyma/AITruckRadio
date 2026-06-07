@@ -7,6 +7,7 @@ import os
 import queue
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ from ai_truck_radio_app.config import (
     executable_exists,
     log,
     rel_path,
+    require_http_url,
     run_subprocess,
 )
 from ai_truck_radio_app.text_processing import (
@@ -172,7 +174,8 @@ class Qwen3TTSWorkerClient:
                     env=env,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-                assert self.proc.stdout is not None and self.proc.stderr is not None
+                if self.proc.stdout is None or self.proc.stderr is None:
+                    raise RuntimeError("Qwen3-TTS worker started without stdout/stderr")
                 threading.Thread(target=self._reader, args=(self.proc.stdout, self.stdout_q, "stdout"), name="Qwen3TTSStdout", daemon=True).start()
                 threading.Thread(target=self._reader, args=(self.proc.stderr, self.stderr_q, "stderr"), name="Qwen3TTSStderr", daemon=True).start()
             except Exception as e:
@@ -362,14 +365,19 @@ class OmniVoiceWorkerClient:
             log(f"OmniVoice worker: не смог запуститься: {e}")
             self.proc = None
             return False
-        threading.Thread(target=self._pump, args=(self.proc.stdout, self.stdout_q, "stdout"), daemon=True).start()
-        threading.Thread(target=self._pump, args=(self.proc.stderr, self.stderr_q, "stderr"), daemon=True).start()
+        proc = self.proc
+        if proc.stdout is None or proc.stderr is None:
+            log("OmniVoice worker: процесс запущен без stdout/stderr")
+            self.stop()
+            return False
+        threading.Thread(target=self._pump, args=(proc.stdout, self.stdout_q, "stdout"), daemon=True).start()
+        threading.Thread(target=self._pump, args=(proc.stderr, self.stderr_q, "stderr"), daemon=True).start()
         log("OmniVoice worker: загружаю модель один раз и оставляю в фоне...")
         deadline = time.time() + int(voice_cfg.get("omnivoice_worker_start_timeout_sec", 420) or 420)
         last_log = 0.0
         while time.time() < deadline:
-            if self.proc.poll() is not None:
-                log(f"OmniVoice worker умер при старте, код {self.proc.returncode}")
+            if proc.poll() is not None:
+                log(f"OmniVoice worker умер при старте, код {proc.returncode}")
                 self._flush_stderr()
                 self.proc = None
                 return False
@@ -419,6 +427,11 @@ class OmniVoiceWorkerClient:
     def render(self, text: str, wav_path: Path, voice_cfg: Dict[str, Any]) -> bool:
         if not self._start(voice_cfg):
             return False
+        proc = self.proc
+        if proc is None or proc.stdin is None:
+            log("OmniVoice worker: процесс или stdin недоступны")
+            self.stop()
+            return False
         job = {
             "text": text,
             "out": str(wav_path),
@@ -433,16 +446,16 @@ class OmniVoiceWorkerClient:
             "normalize_ru": bool(voice_cfg.get("omnivoice_normalize_ru", True)),
         }
         try:
-            self.proc.stdin.write(json.dumps(job, ensure_ascii=False) + "\n")
-            self.proc.stdin.flush()
+            proc.stdin.write(json.dumps(job, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
         except Exception as e:
             log(f"OmniVoice worker: не смог отправить задачу: {e}")
             self.stop()
             return False
         deadline = time.time() + int(voice_cfg.get("omnivoice_worker_job_timeout_sec", 420) or 420)
         while time.time() < deadline:
-            if self.proc.poll() is not None:
-                log(f"OmniVoice worker умер во время синтеза, код {self.proc.returncode}")
+            if proc.poll() is not None:
+                log(f"OmniVoice worker умер во время синтеза, код {proc.returncode}")
                 self._flush_stderr()
                 self.proc = None
                 return False
@@ -1014,11 +1027,11 @@ $synth.Dispose()
             "response_format": fmt,
             "speed": speed,
         }
-        import urllib.request, urllib.error
         try:
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            url = require_http_url(url)
             req = urllib.request.Request(url, data=raw, headers={"Content-Type": "application/json", "Accept": "audio/*"}, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
                 data = resp.read()
                 ctype = str(resp.headers.get("Content-Type", ""))
             if len(data) < 1024:
@@ -1140,5 +1153,4 @@ $synth.Dispose()
                     p.unlink()
             except Exception:
                 pass
-
 

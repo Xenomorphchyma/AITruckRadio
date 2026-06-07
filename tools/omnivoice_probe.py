@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 
 print('[probe] python:', sys.version)
@@ -15,6 +14,7 @@ except Exception as e:
 
 try:
     import soundfile
+    _ = soundfile
     print('[probe] soundfile: OK')
 except Exception as e:
     print('[probe] soundfile import failed:', repr(e))

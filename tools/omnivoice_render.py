@@ -4,7 +4,6 @@ import argparse
 import os
 from pathlib import Path
 import re
-import sys
 import traceback
 
 VERSION = '0.4.8-render'
@@ -218,7 +217,7 @@ def main() -> int:
     os.environ.setdefault('PYTHONUTF8', '1')
     apply_ffmpeg_path(root)
 
-    text = args.text if args.text is not None else read_text(args.text_file, required=True)
+    text = str(args.text if args.text is not None else read_text(args.text_file, required=True) or "")
     pronunciation_file = Path(args.pronunciation_file) if args.pronunciation_file else (root / 'prompts' / 'pronunciation_ru.tsv')
     if not args.no_ru_normalize:
         text = normalize_ru_tts_text(text, pronunciation_file if pronunciation_file.exists() else None)
@@ -255,6 +254,8 @@ def main() -> int:
 
     try:
         model = OmniVoice.from_pretrained(args.model, device_map=device_map, dtype=dtype)
+        if model is None:
+            raise RuntimeError('OmniVoice.from_pretrained returned None')
         kwargs = {
             'text': text,
             'num_step': args.steps,

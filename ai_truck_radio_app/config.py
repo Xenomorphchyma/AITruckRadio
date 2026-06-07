@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +22,13 @@ RUS_MONTHS = [
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
+
+
+def require_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Разрешены только http/https URL: {url!r}")
+    return parsed.geturl()
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "host": "127.0.0.1",
@@ -393,7 +401,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "host_regular_count_min": 1,
     "host_regular_count_max": 2,
     "host_regular_multi_chance": 0.18,
-    "host_duo_intro_in_mostly_solo": True,
     "host_solo_name": "Максим",
     "hosts": [
         {
