@@ -1,0 +1,3 @@
+# Optional dependency for automatic reference-audio transcription in the panel.
+# Install into the main app environment when you want "upload reference -> get text" to work.
+faster-whisper==1.2.1

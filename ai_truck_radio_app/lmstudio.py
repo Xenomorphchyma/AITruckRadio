@@ -19,6 +19,212 @@ def _current_time_text() -> str:
     return f"{now.tm_hour:02d}:{now.tm_min:02d}, {weekday}, {now.tm_mday} {month} {now.tm_year}"
 
 
+def _compact_prompt_text(value: Any, max_chars: int) -> str:
+    text = " ".join(str(value or "").replace("\x00", " ").split()).strip()
+    limit = max(1, int(max_chars))
+    if len(text) <= limit:
+        return text
+    clipped = text[: max(1, limit - 1)].rstrip()
+    boundary = max(clipped.rfind(". "), clipped.rfind("; "), clipped.rfind(", "), clipped.rfind(" "))
+    if boundary >= max(20, limit // 2):
+        clipped = clipped[:boundary].rstrip(" ,;")
+    return clipped + "…"
+
+
+def _prompt_daypart(ctx: Dict[str, Any]) -> str:
+    hour = int(ctx.get("computer_hour", time.localtime().tm_hour) or 0)
+    if 5 <= hour <= 11:
+        return "утро"
+    if 12 <= hour <= 17:
+        return "день"
+    if 18 <= hour <= 22:
+        return "вечер"
+    return "ночь"
+
+
+def _host_output_token_limit(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> int:
+    configured = max(96, int(cfg.get("lm_max_tokens", 620) or 620))
+    length = str(ctx.get("dj_length", "short") or "short").lower()
+    length_cap = {"short": 360, "medium": 520, "long": 760}.get(length, 520)
+    horoscope_count = len(ctx.get("horoscope_expected") or [])
+    if horoscope_count:
+        length_cap = max(length_cap, min(900, 180 + horoscope_count * 60))
+    hard_cap = max(96, int(cfg.get("lm_host_max_tokens", 760) or 760))
+    return max(96, min(configured, length_cap, hard_cap))
+
+
+def _compact_host_system(cfg: Dict[str, Any]) -> str:
+    limit = max(240, min(2000, int(cfg.get("lm_host_system_max_chars", 900) or 900)))
+    persona = str(cfg.get("radio_persona") or "Ты пишешь готовый русский текст музыкального радио.")
+    return _compact_prompt_text(persona, limit)
+
+
+def build_compact_host_prompt(
+    cfg: Dict[str, Any],
+    previous_track: Optional[Track],
+    next_track: Optional[Track],
+    ctx: Dict[str, Any],
+) -> str:
+    """Build a bounded, priority-ordered prompt suitable for a small local LM."""
+    max_chars = max(2600, min(12000, int(cfg.get("lm_host_prompt_max_chars", 4800) or 4800)))
+    intro = bool(ctx.get("intro_allowed", False))
+    hosts = [host for host in (ctx.get("hosts") or []) if isinstance(host, dict) and str(host.get("name") or "").strip()]
+    host_names = [str(host.get("name") or "").strip() for host in hosts] or ["Ведущий"]
+    two_hosts = bool(ctx.get("two_hosts") and len(host_names) >= 2)
+    previous_name = previous_track.display_name if previous_track else "НЕТ"
+    nonblocking_intro = intro and not bool(cfg.get("startup_intro_blocking", True))
+    if nonblocking_intro and not cfg.get("startup_intro_track_specific", False):
+        next_name = "первый трек из локального плейлиста"
+    else:
+        next_name = next_track.display_name if next_track else "следующий трек из локального плейлиста"
+
+    dj_length = str(ctx.get("dj_length", "short") or "short").lower()
+    task = _compact_prompt_text(ctx.get("dj_instruction") or "Короткая радиоподводка.", 260)
+    topic = _compact_prompt_text(ctx.get("dj_topic_label") or "музыка", 100)
+    time_text = str(ctx.get("time_text") or _current_time_text())
+    spoken_time = str(ctx.get("spoken_time_text") or "").strip()
+    combined_time = time_text if not spoken_time or spoken_time in time_text else f"{time_text}; вслух: {spoken_time}"
+    mode = "СТАРТ ЭФИРА, предыдущих треков не было" if intro else "ЭФИР УЖЕ ИДЁТ"
+
+    core_lines = [
+        "[ЗАДАЧА]",
+        f"{task} Тема: {topic}.",
+        "[ПРИОРИТЕТНЫЕ ФАКТЫ]",
+        f"Станция: {_compact_prompt_text(ctx.get('station_name') or 'Волна FM', 100)}.",
+        f"Режим: {mode}.",
+        f"Ведущие: {', '.join(host_names)}.",
+        f"Предыдущий трек: {'НЕТ' if intro else _compact_prompt_text(previous_name, 220)}.",
+        f"Следующий трек: {_compact_prompt_text(next_name, 220)}.",
+        f"Время: {_compact_prompt_text(combined_time, 260)}; сейчас {_prompt_daypart(ctx)}.",
+    ]
+
+    weather = str(ctx.get("weather_text") or "").strip()
+    weather_city = str(ctx.get("weather_city") or "").strip()
+    if weather_city and weather_city.casefold() not in weather.casefold():
+        weather = f"{weather_city}; {weather}" if weather else weather_city
+    entertainment = str(ctx.get("entertainment_text") or "").strip()
+    horoscope_parts = []
+    for item in ctx.get("horoscope_expected") or []:
+        if not isinstance(item, dict):
+            continue
+        sign = str(item.get("sign") or "").strip()
+        forecast = str(item.get("text") or "").strip()
+        if sign and forecast:
+            horoscope_parts.append(f"{sign}: {forecast}")
+    verified_horoscope = " | ".join(horoscope_parts)
+    normalized_entertainment = " ".join(entertainment.casefold().split())
+    if verified_horoscope and all(" ".join(part.casefold().split()) in normalized_entertainment for part in horoscope_parts):
+        verified_horoscope = ""
+
+    recent_unique: List[str] = []
+    seen_recent = set()
+    for item in reversed(list(ctx.get("recent_host_texts") or [])):
+        compact = _compact_prompt_text(item, 180)
+        key = compact.casefold()
+        if compact and key not in seen_recent:
+            recent_unique.append(compact)
+            seen_recent.add(key)
+        if len(recent_unique) >= 2:
+            break
+    recent_unique.reverse()
+
+    optional_fields = [
+        ("Исправить прошлую ошибку", ctx.get("retry_reason"), 300),
+        ("Рубрика", entertainment, 1000),
+        ("Проверенные прогнозы", verified_horoscope, 1200),
+        ("Инструкция рубрики", ctx.get("entertainment_instruction"), 300),
+        ("Погода", weather, 380),
+        ("Новость", ctx.get("news_text"), 420),
+        ("Привет слушателя", ctx.get("greeting_text"), 260),
+        ("Гость", "Разрешены реплики Гость:; гость не заменяет ведущих" if ctx.get("force_guest") else "", 180),
+        ("Профиль предыдущего", ctx.get("previous_track_info") if not intro else "", 420),
+        ("Профиль следующего", ctx.get("next_track_info"), 420),
+        ("Стиль", f"{ctx.get('style') or ''} {ctx.get('style_prompt') or ''}", 220),
+        ("Не повторять", " || ".join(recent_unique), 380),
+    ]
+
+    if dj_length == "long":
+        length_rule = "5–7 коротких реплик" if two_hosts else "5–7 предложений"
+    elif dj_length == "medium":
+        length_rule = "около 4 коротких реплик" if two_hosts else "3–4 предложения"
+    else:
+        length_rule = "2–3 короткие реплики" if two_hosts else "1–2 предложения"
+    prefixes = ", ".join(f"«{name}:»" for name in host_names)
+    if two_hosts:
+        speaker_rule = f"Допустимые подписи — {prefixes}. Каждый из первых двух ведущих должен сказать содержательную реплику."
+    else:
+        forbidden_names = [
+            str(name).strip()
+            for name in (ctx.get("all_host_names") or [])
+            if str(name).strip() and str(name).strip() not in host_names
+        ]
+        forbidden = f" Другие подписи запрещены: {', '.join(forbidden_names)}." if forbidden_names else ""
+        speaker_rule = f"Единственная допустимая подпись — {prefixes}.{forbidden}"
+
+    dynamic_rules = []
+    if intro:
+        dynamic_rules.append("На старте нельзя утверждать, что музыка уже звучала; подводи только к первому треку.")
+    else:
+        dynamic_rules.append("Не приветствуй станцию заново; следующий трек не называй уже прозвучавшим.")
+    if weather:
+        dynamic_rules.append("Погоду пересказывай только из строки «Погода», сохрани город и числа.")
+    entertainment_hint = f"{topic} {ctx.get('entertainment_instruction') or ''}".casefold()
+    if "загад" in entertainment_hint:
+        if "ответ" in entertainment_hint and "без ответа" not in entertainment_hint:
+            dynamic_rules.append("В блоке ответа сначала назови ответ и не задавай новую загадку.")
+        else:
+            dynamic_rules.append("Задай загадку без ответа; ответ будет в следующий выход, не обещай «завтра».")
+    if horoscope_parts:
+        dynamic_rules.append("Внутри реплики сохрани метки знаков вида «Овен: прогноз» для каждого проверенного знака.")
+    if "неправиль" in entertainment_hint or "неверн" in entertainment_hint:
+        dynamic_rules.append("Неверный игровой ответ явно обозначь как намеренно неверный, не как факт.")
+    if ctx.get("allow_omnivoice_nonverbal_tags"):
+        dynamic_rules.append(
+            "Допустим максимум один тег после подписи: [laughter], [sigh], [confirmation-en], [question-en], "
+            "[question-ah], [question-oh], [question-ei], [question-yi], [surprise-ah], [surprise-oh], "
+            "[surprise-wa], [surprise-yo], [dissatisfaction-hnn]."
+        )
+    if ctx.get("force_guest"):
+        dynamic_rules.append("Гость должен получить отдельную содержательную реплику с подписью «Гость:».")
+    suffix_lines = [
+        "[СХЕМА ОТВЕТА]",
+        speaker_rule,
+        f"Объём: {length_rule}. Каждая смена говорящего — новая строка «Имя: текст».",
+        "[ЖЁСТКИЕ ОГРАНИЧЕНИЯ]",
+        "Только готовый русский текст эфира: без markdown, thinking, списков, служебных слов, вложенных подписей и ремарок.",
+        "Не выдумывай факты: реальные сведения бери только из блока фактов. Без игр, VR, кабин, грузовиков, рейсов, трасс и дорожных клише.",
+        "Не меняй имена, город, числа и названия треков. Текст должен быть безопасен для TTS; последняя реплика заканчивается . ! ? или …",
+        *dynamic_rules,
+    ]
+    if cfg.get("lm_append_no_think", True):
+        suffix_lines.append("/no_think")
+
+    core = "\n".join(core_lines)
+    suffix = "\n".join(suffix_lines)
+    remaining = max(0, max_chars - len(core) - len(suffix) - 2)
+    selected: List[str] = []
+    seen_values = set()
+    for label, value, field_limit in optional_fields:
+        compact = _compact_prompt_text(value, field_limit)
+        normalized = compact.casefold()
+        if not compact or normalized in seen_values:
+            continue
+        line = f"{label}: {compact}"
+        if len(line) + 1 <= remaining:
+            selected.append(line)
+            remaining -= len(line) + 1
+            seen_values.add(normalized)
+            continue
+        value_budget = remaining - len(label) - 3
+        if value_budget >= 60:
+            line = f"{label}: {_compact_prompt_text(compact, value_budget)}"
+            selected.append(line)
+            remaining -= len(line) + 1
+            seen_values.add(normalized)
+    middle = "\n".join(selected)
+    return core + ("\n" + middle if middle else "") + "\n" + suffix
+
+
 class LMStudioClient:
     def __init__(self, cfg: Dict[str, Any]):
         self.cfg = cfg
@@ -48,15 +254,20 @@ class LMStudioClient:
         return json.loads(raw)
 
     def list_models(self) -> List[str]:
+        return list(self.probe_models()["models"])
+
+    def probe_models(self) -> Dict[str, Any]:
+        """Distinguish a reachable server with no model from no server at all."""
         try:
             data = self._request_json("GET", f"{self.base_url}/models")
-            models = []
+            models: List[str] = []
             for item in data.get("data", []):
                 if isinstance(item, dict) and item.get("id"):
                     models.append(str(item["id"]))
-            return models
-        except Exception:
-            return []
+            return {"reachable": True, "models": models, "error": ""}
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            return {"reachable": False, "models": [], "error": message[:500]}
 
     def pick_model(self) -> str:
         models = self.list_models()
@@ -127,6 +338,32 @@ class LMStudioClient:
         radio text. The previous over-specified prompt made some local models
         echo the prompt, use bullet lists, and ignore the second host.
         """
+        if self.cfg.get("lm_compact_host_prompt", True):
+            model = self.pick_model()
+            prompt = build_compact_host_prompt(self.cfg, previous_track, next_track, ctx)
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _compact_host_system(self.cfg)},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": float(self.cfg.get("lm_temperature", 0.78)),
+                "max_tokens": _host_output_token_limit(self.cfg, ctx),
+                "stream": False,
+            }
+            data = self._request_json("POST", f"{self.base_url}/chat/completions", payload)
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError("LM Studio вернул пустой choices")
+            msg = choices[0].get("message") or {}
+            raw_text = str(msg.get("content") or "").strip()
+            cleaned = sanitize_general_radio_text(
+                clean_host_text(raw_text, int(self.cfg.get("max_host_text_chars", 4000) or 4000))
+            )
+            if self.cfg.get("tts_debug_log", True):
+                log("LM Studio вернул черновик ведущих: " + " ".join(cleaned.split())[:500])
+            return cleaned
+
         model = self.pick_model()
         intro_allowed = bool(ctx.get("intro_allowed", False))
         prev_name = previous_track.display_name if previous_track else "ещё ничего не играло"

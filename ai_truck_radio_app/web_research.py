@@ -13,6 +13,7 @@ from typing import Dict, List
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AITruckRadio/0.8"
 SEARCH_URL = "https://search.yahoo.com/search?p="
+FALLBACK_SEARCH_URL = "https://html.duckduckgo.com/html/?q="
 SKIP_DOMAINS = {
     "facebook.com",
     "finance.yahoo.com",
@@ -57,6 +58,40 @@ class SearchParser(HTMLParser):
             self.results.append({"url": url, "title": title})
         self.active = False
 
+
+class DuckDuckGoSearchParser(HTMLParser):
+    """Parse DuckDuckGo's lightweight HTML results as a reserve provider."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: List[Dict[str, str]] = []
+        self.href = ""
+        self.text: List[str] = []
+        self.active = False
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        classes = set(str(values.get("class") or "").split())
+        if tag == "a" and "result__a" in classes:
+            self.href = str(values.get("href") or "")
+            self.text = []
+            self.active = True
+
+    def handle_data(self, data: str) -> None:
+        if self.active:
+            self.text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or not self.active:
+            return
+        url = self.href
+        parsed = urllib.parse.urlparse(url)
+        if parsed.path.startswith("/l/"):
+            url = (urllib.parse.parse_qs(parsed.query).get("uddg") or [""])[0]
+        title = re.sub(r"\s+", " ", "".join(self.text)).strip()
+        if url.startswith(("http://", "https://")) and title:
+            self.results.append({"url": urllib.parse.unquote(url), "title": title})
+        self.active = False
 
 class PageParser(HTMLParser):
     blocked = {"script", "style", "noscript", "svg", "canvas", "nav", "footer", "form"}
@@ -132,12 +167,26 @@ def _fetch(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
 
 
 def search_pages(query: str, timeout: int, limit: int) -> List[Dict[str, str]]:
-    raw, _ = _fetch(SEARCH_URL + urllib.parse.quote_plus(query), timeout, 900_000)
-    parser = SearchParser()
-    parser.feed(raw.decode("utf-8", errors="replace"))
+    raw_results: List[Dict[str, str]] = []
+    errors: List[Exception] = []
+    for base_url, parser_type in (
+        (SEARCH_URL, SearchParser),
+        (FALLBACK_SEARCH_URL, DuckDuckGoSearchParser),
+    ):
+        try:
+            raw, _ = _fetch(base_url + urllib.parse.quote_plus(query), timeout, 900_000)
+            parser = parser_type()
+            parser.feed(raw.decode("utf-8", errors="replace"))
+            raw_results.extend(parser.results)
+            if len(raw_results) >= max(1, limit):
+                break
+        except Exception as exc:
+            errors.append(exc)
+    if not raw_results and errors:
+        raise RuntimeError("search providers unavailable: " + "; ".join(str(error) for error in errors))
     out: List[Dict[str, str]] = []
     seen = set()
-    for item in parser.results:
+    for item in raw_results:
         url = _canonical_url(item["url"])
         domain = _domain(url)
         if not domain or domain in SKIP_DOMAINS or any(domain.endswith("." + item) for item in SKIP_DOMAINS):

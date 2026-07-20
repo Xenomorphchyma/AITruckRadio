@@ -61,8 +61,21 @@ ENTERTAINMENT_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "guest_stories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "text": {"type": "string"},
+                    "source_ids": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["title", "text", "source_ids"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["horoscope", "riddles", "wrong_games"],
+    "required": ["horoscope", "riddles", "wrong_games", "guest_stories"],
     "additionalProperties": False,
 }
 
@@ -188,6 +201,21 @@ def _validate_pack(data: Dict[str, Any], fallback: Dict[str, Any], max_items: in
             })
     if games:
         out["wrong_games"] = games[:max_items]
+    guest_stories = []
+    for item in data.get("guest_stories") or []:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_text(item.get("title"), 140)
+        text = _clean_text(item.get("text"), 650)
+        source_ids = _valid_source_ids(item.get("source_ids"), source_count)
+        risky = re.search(
+            r"(?i)\b(политик|выбор|войн|убий|погиб|теракт|диагноз|лекарств|кредит|инвестиц|ставк[аи]|гарантир)\w*",
+            f"{title} {text}",
+        )
+        if source_ids and title and 60 <= len(text) <= 650 and not risky:
+            guest_stories.append({"title": title, "text": text, "source_ids": source_ids})
+    if guest_stories:
+        out["guest_stories"] = guest_stories[:max_items]
     return out
 
 
@@ -298,6 +326,8 @@ class EntertainmentAgent:
             ("riddles", "короткие загадки с ответами и вариантами для взрослых"),
             ("quiz", "простые вопросы викторины с однозначными ответами"),
         ]
+        if self.cfg.get("guest_enabled", False):
+            topics.append(("guest", "короткие добрые истории о культуре музыке творчестве и необычных увлечениях"))
         pages: List[Dict[str, Any]] = []
         seen = set()
         for topic, query in topics:
@@ -352,12 +382,20 @@ class EntertainmentAgent:
                 "Не повторяй вопросы из журнала:\n{exclusion_text}",
             ),
         }
-        data: Dict[str, Any] = {"horoscope": [], "riddles": [], "wrong_games": []}
+        if self.cfg.get("guest_enabled", False):
+            topic_prompts["guest"] = (
+                "guest_stories",
+                f"Подготовь до {max_items} коротких добрых историй для гостя радио. "
+                "Каждая история должна быть аккуратным пересказом SOURCE, без выдуманных имён, цитат и деталей, "
+                "без политики, преступлений, медицины, финансов и личных данных. source_ids обязательны.",
+            )
+        data: Dict[str, Any] = {"horoscope": [], "riddles": [], "wrong_games": [], "guest_stories": []}
+        topic_count = max(1, len(topic_prompts))
         for topic, (key, instruction) in topic_prompts.items():
             pages = [page for page in research["pages"] if page.get("topic") == topic]
             if not pages:
                 continue
-            evidence = _compact_evidence(pages, max(3000, total_evidence // 3))
+            evidence = _compact_evidence(pages, max(2500, total_evidence // topic_count))
             prompt = (
                 f"Дата: {time.strftime('%d.%m.%Y')}.\n{instruction}\n"
                 "Верни только JSON заданной структуры, без markdown.\n\nSOURCE:\n" + evidence
@@ -382,6 +420,7 @@ class EntertainmentAgent:
                         "Проверь по SOURCE только вопрос и correct. wrong_examples являются специально вымышленными: "
                         "не сверяй и не удаляй их, сохрани 3-4 явно неправильных ответа."
                     ),
+                    "guest_stories": "Проверь, что каждая история и все её конкретные детали подтверждены SOURCE.",
                 }[key]
                 draft = self.lm.generate_plain_text(
                     "Проверь JSON по SOURCE. Удали неподтверждённые элементы, сохрани структуру и верни только JSON. "
@@ -397,48 +436,50 @@ class EntertainmentAgent:
                     no_think=bool(self.cfg.get("entertainment_agent_no_think", True)),
                 )
             parsed = json.loads(draft)
-            if key in {"riddles", "wrong_games"} and bool(self.cfg.get("entertainment_agent_factcheck_enabled", True)):
-                parsed[key] = _retain_factchecked_originals(original.get(key) or [], parsed.get(key) or [])
+            if key in {"riddles", "wrong_games", "guest_stories"} and bool(self.cfg.get("entertainment_agent_factcheck_enabled", True)):
+                parsed[key] = _retain_factchecked_originals(
+                    original.get(key) or [],
+                    parsed.get(key) or [],
+                    question_key="title" if key == "guest_stories" else "question",
+                )
             if isinstance(parsed.get(key), list):
                 data[key] = parsed[key]
         pack = _validate_pack(data, fallback, max_items, len(research["pages"]))
-        accepted_before_history = {
-            "horoscope": len(pack.get("horoscope") or []),
-            "riddles": len(pack.get("riddles") or []),
-            "wrong_games": len(pack.get("wrong_games") or []),
-        }
+        validation_keys = ("horoscope", "riddles", "wrong_games", "guest_stories")
+        accepted_before_history = {key: len(pack.get(key) or []) for key in validation_keys}
         fallback_used = {
             key: bool(pack.get(key) == fallback.get(key))
-            for key in ("horoscope", "riddles", "wrong_games")
+            for key in validation_keys
         }
         today = time.strftime("%Y-%m-%d")
         pack["horoscope"] = filter_unused(self.cfg, "horoscope", pack.get("horoscope") or [], today)
         pack["riddles"] = filter_unused(self.cfg, "riddle", pack.get("riddles") or [])
         pack["wrong_games"] = filter_unused(self.cfg, "wrong_game", pack.get("wrong_games") or [])
+        pack["guest_stories"] = filter_unused(self.cfg, "guest_story", pack.get("guest_stories") or [])
         research_summary = {
             "model": model,
             "queries": research["queries"],
             "sources": [{"title": p["title"], "url": p["url"]} for p in research["pages"]],
             "created_ts": int(time.time()),
         }
-        raw_counts = {key: len(data.get(key) or []) for key in ("horoscope", "riddles", "wrong_games")}
-        final_counts = {key: len(pack.get(key) or []) for key in ("horoscope", "riddles", "wrong_games")}
+        raw_counts = {key: len(data.get(key) or []) for key in validation_keys}
+        final_counts = {key: len(pack.get(key) or []) for key in validation_keys}
         validation = {
             "raw_counts": raw_counts,
             "accepted_before_history": accepted_before_history,
             "rejected_by_validation": {
                 key: max(0, raw_counts[key] - accepted_before_history[key])
-                for key in ("horoscope", "riddles", "wrong_games")
+                for key in validation_keys
             },
             "final_counts": final_counts,
             "fallback_used": fallback_used,
             "fallback_reason": {
                 key: ("валидный результат агента не заменил встроенный пакет" if fallback_used[key] else "")
-                for key in ("horoscope", "riddles", "wrong_games")
+                for key in validation_keys
             },
             "removed_by_history": {
                 key: max(0, accepted_before_history[key] - final_counts[key])
-                for key in ("horoscope", "riddles", "wrong_games")
+                for key in validation_keys
             },
         }
         pack["_research"] = research_summary

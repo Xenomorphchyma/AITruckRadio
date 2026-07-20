@@ -1,0 +1,3 @@
+# Optional Russian-focused ASR backend for reference voice transcription.
+# Kept separate from faster-whisper because it brings its own PyTorch stack.
+gigaam[torch] @ git+https://github.com/salute-developers/GigaAM.git@main

@@ -15,6 +15,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,7 @@ from ai_truck_radio_app.text_processing import (
     strip_spoken_host_names,
     trim_to_complete_sentence,
 )
+from ai_truck_radio_app.ref_voice import validate_reference_transcript
 
 
 def host_name_or_empty(host_name: Optional[str]) -> str:
@@ -284,6 +286,9 @@ class OmniVoiceWorkerClient:
         self.proc: Optional[subprocess.Popen] = None
         self.stdout_q: "queue.Queue[str]" = queue.Queue()
         self.stderr_q: "queue.Queue[str]" = queue.Queue()
+        self.lock = threading.RLock()
+        self.started_key = ""
+        self.stop_requested = threading.Event()
 
     def _pump(self, stream, q: "queue.Queue[str]", prefix: str) -> None:
         try:
@@ -295,24 +300,46 @@ class OmniVoiceWorkerClient:
             pass
 
     def stop(self) -> None:
-        if self.proc is None:
+        self.stop_requested.set()
+        with self.lock:
+            proc = self.proc
+            self.proc = None
+            self.started_key = ""
+        if proc is None:
             return
         try:
-            if self.proc.poll() is None:
-                self.proc.terminate()
+            if proc.poll() is None:
+                proc.terminate()
                 try:
-                    self.proc.wait(timeout=5)
+                    proc.wait(timeout=5)
                 except Exception:
-                    self.proc.kill()
+                    proc.kill()
         except Exception:
             pass
-        self.proc = None
+    def _start_key(self, voice_cfg: Dict[str, Any]) -> str:
+        return json.dumps({
+            "python": str(voice_cfg.get("omnivoice_python", "")),
+            "model": str(voice_cfg.get("omnivoice_model", "k2-fsa/OmniVoice")),
+            "device": str(voice_cfg.get("omnivoice_device", "cuda:0")),
+        }, ensure_ascii=False, sort_keys=True)
+
+    def _drain_stdout(self) -> None:
+        while True:
+            try:
+                self.stdout_q.get_nowait()
+            except queue.Empty:
+                return
 
     def _start(self, voice_cfg: Dict[str, Any]) -> bool:
-        if self.proc is not None and self.proc.poll() is None:
+        self.stop_requested.clear()
+        key = self._start_key(voice_cfg)
+        if self.proc is not None and self.proc.poll() is None and self.started_key == key:
             if self.owner.cfg.get("tts_debug_log", True):
                 log("OmniVoice worker уже загружен — использую без перезапуска")
             return True
+        if self.proc is not None:
+            self.stop()
+        self._drain_stdout()
         py = str(voice_cfg.get("omnivoice_python", ".venv_omnivoice\\Scripts\\python.exe")).strip() or sys.executable
         py_path = Path(py)
         if not py_path.is_absolute():
@@ -376,6 +403,10 @@ class OmniVoiceWorkerClient:
         deadline = time.time() + int(voice_cfg.get("omnivoice_worker_start_timeout_sec", 420) or 420)
         last_log = 0.0
         while time.time() < deadline:
+            if self.stop_requested.is_set():
+                log("OmniVoice worker: загрузка отменена из панели")
+                self.stop()
+                return False
             if proc.poll() is not None:
                 log(f"OmniVoice worker умер при старте, код {proc.returncode}")
                 self._flush_stderr()
@@ -393,6 +424,7 @@ class OmniVoiceWorkerClient:
                     log("OmniVoice worker stdout: " + line[-700:])
                 continue
             if data.get("ok") and data.get("stage") == "ready":
+                self.started_key = key
                 log(f"OmniVoice worker готов: device={data.get('device')} dtype={data.get('dtype')} cuda={data.get('cuda_available')} gpu={data.get('gpu') or 'none'}")
                 return True
             if not data.get("ok"):
@@ -425,14 +457,21 @@ class OmniVoiceWorkerClient:
                 shown += 1
 
     def render(self, text: str, wav_path: Path, voice_cfg: Dict[str, Any]) -> bool:
-        if not self._start(voice_cfg):
-            return False
-        proc = self.proc
-        if proc is None or proc.stdin is None:
-            log("OmniVoice worker: процесс или stdin недоступны")
-            self.stop()
-            return False
-        job = {
+        # stdout is a single ordered protocol stream.  Holding this lock for the
+        # full request prevents two TTS callers from consuming one another's
+        # result, while job_id protects against stale output after a timeout.
+        with self.lock:
+            if not self._start(voice_cfg):
+                return False
+            proc = self.proc
+            if proc is None or proc.stdin is None:
+                log("OmniVoice worker: процесс или stdin недоступны")
+                self.stop()
+                return False
+            self._drain_stdout()
+            job_id = uuid.uuid4().hex
+            job = {
+            "job_id": job_id,
             "text": text,
             "out": str(wav_path),
             "mode": str(voice_cfg.get("omnivoice_mode", "clone")),
@@ -444,40 +483,45 @@ class OmniVoiceWorkerClient:
             "tail_silence_ms": int(voice_cfg.get("omnivoice_tail_silence_ms", 260) or 260),
             "pronunciation_file": str(voice_cfg.get("omnivoice_pronunciation_file", "prompts/pronunciation_ru.tsv")),
             "normalize_ru": bool(voice_cfg.get("omnivoice_normalize_ru", True)),
-        }
-        try:
-            proc.stdin.write(json.dumps(job, ensure_ascii=False) + "\n")
-            proc.stdin.flush()
-        except Exception as e:
-            log(f"OmniVoice worker: не смог отправить задачу: {e}")
+            }
+            try:
+                proc.stdin.write(json.dumps(job, ensure_ascii=False) + "\n")
+                proc.stdin.flush()
+            except Exception as e:
+                log(f"OmniVoice worker: не смог отправить задачу: {e}")
+                self.stop()
+                return False
+            deadline = time.time() + int(voice_cfg.get("omnivoice_worker_job_timeout_sec", 420) or 420)
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    log(f"OmniVoice worker умер во время синтеза, код {proc.returncode}")
+                    self._flush_stderr()
+                    self.proc = None
+                    self.started_key = ""
+                    return False
+                self._flush_stderr(throttle=True, last_log_ref=[0])
+                try:
+                    line = self.stdout_q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    if line.strip():
+                        log("OmniVoice worker stdout: " + line[-700:])
+                    continue
+                if data.get("job_id") != job_id:
+                    log("OmniVoice worker: проигнорирован устаревший ответ другой задачи")
+                    continue
+                if data.get("ok") and data.get("stage") == "render":
+                    if data.get("normalized_text") and self.owner.cfg.get("tts_debug_log", True):
+                        log("OmniVoice normalized: " + str(data.get("normalized_text"))[:220])
+                    return wav_path.exists() and wav_path.stat().st_size > 1000
+                log("OmniVoice worker render failed: " + json.dumps(data, ensure_ascii=False)[-1600:])
+                return False
+            log("OmniVoice worker: таймаут синтеза; перезапускаю worker перед следующей задачей")
             self.stop()
             return False
-        deadline = time.time() + int(voice_cfg.get("omnivoice_worker_job_timeout_sec", 420) or 420)
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                log(f"OmniVoice worker умер во время синтеза, код {proc.returncode}")
-                self._flush_stderr()
-                self.proc = None
-                return False
-            self._flush_stderr(throttle=True, last_log_ref=[0])
-            try:
-                line = self.stdout_q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                data = json.loads(line)
-            except Exception:
-                if line.strip():
-                    log("OmniVoice worker stdout: " + line[-700:])
-                continue
-            if data.get("ok") and data.get("stage") == "render":
-                if data.get("normalized_text") and self.owner.cfg.get("tts_debug_log", True):
-                    log("OmniVoice normalized: " + str(data.get("normalized_text"))[:220])
-                return wav_path.exists() and wav_path.stat().st_size > 1000
-            log("OmniVoice worker render failed: " + json.dumps(data, ensure_ascii=False)[-1600:])
-            return False
-        log("OmniVoice worker: таймаут синтеза")
-        return False
 
 
 class TTS:
@@ -489,6 +533,7 @@ class TTS:
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.qwen3_worker: Optional[Qwen3TTSWorkerClient] = None
         self.omnivoice_worker: Optional[OmniVoiceWorkerClient] = None
+        self.cache_lock = threading.RLock()
 
     def close(self) -> None:
         if self.qwen3_worker is not None:
@@ -506,6 +551,26 @@ class TTS:
 
     def text_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+    def _cache_signature(self, backend: str, host_name: Optional[str], voice_cfg: Dict[str, Any]) -> str:
+        """Every render-affecting setting belongs in the cache key.
+
+        Keeping the full resolved voice config is deliberately conservative: a
+        changed TTS option must never serve audio rendered with its old value.
+        """
+        try:
+            voice = json.dumps(voice_cfg, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        except Exception:
+            voice = repr(sorted((str(k), repr(v)) for k, v in voice_cfg.items()))
+        return json.dumps({
+            "backend": backend,
+            "host": host_name_or_empty(host_name),
+            "voice": voice,
+            "mp3": {
+                "bitrate_kbps": self.cfg.get("bitrate_kbps"),
+                "ffmpeg_path": self.cfg.get("ffmpeg_path"),
+            },
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     def _voice_cfg_for_host(self, host_name: Optional[str], host_override: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = dict(self.cfg)
@@ -548,10 +613,40 @@ class TTS:
             if self.omnivoice_worker is None:
                 self.omnivoice_worker = OmniVoiceWorkerClient(self)
             log(f"OmniVoice prewarm: заранее загружаю worker для {host_name or 'первого доступного голоса'}")
-            if self.omnivoice_worker._start(voice_cfg):
+            with self.omnivoice_worker.lock:
+                ready = self.omnivoice_worker._start(voice_cfg)
+            if ready:
                 log("OmniVoice prewarm: worker готов до первой реплики")
         except Exception as e:
             log(f"OmniVoice prewarm не удался, продолжу обычным запуском при TTS: {e}")
+
+    def start_omnivoice_worker(self, hosts: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """Explicitly load the persistent OmniVoice service from the panel."""
+        backend = str(self.cfg.get("tts_backend", "")).lower().strip()
+        if backend not in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"}:
+            return False
+        if not bool(self.cfg.get("omnivoice_persistent_worker", True)):
+            return False
+        host_name = None
+        for host in hosts or self.cfg.get("hosts") or []:
+            if isinstance(host, dict) and host.get("enabled", True) is not False and str(host.get("name", "")).strip():
+                host_name = str(host.get("name")).strip()
+                break
+        voice_cfg = self._voice_cfg_for_host(host_name)
+        if self.omnivoice_worker is None:
+            self.omnivoice_worker = OmniVoiceWorkerClient(self)
+        with self.omnivoice_worker.lock:
+            return self.omnivoice_worker._start(voice_cfg)
+
+    def stop_omnivoice_worker(self) -> bool:
+        """Stop OmniVoice without closing the other TTS backends."""
+        worker = self.omnivoice_worker
+        if worker is None:
+            return False
+        worker.stop_requested.set()
+        worker.stop()
+        self.omnivoice_worker = None
+        return True
 
     def get_or_create_dialogue_mp3(self, text: str, hosts: List[Dict[str, Any]]) -> Optional[Path]:
         if not self.cfg.get("tts_dialogue_split_hosts", True):
@@ -586,20 +681,9 @@ class TTS:
             host, spoken = segments[0] if segments else (None, text)
             host_cfg = host_cfg_by_name.get(str(host or "").strip().lower())
             return self.get_or_create_mp3(spoken, host, host_cfg)
-        voice_sig = json.dumps([{
-            "name": hst.get("name", ""),
-            "voice_ver": hst.get("host_voice_profile_version", ""),
-            "qwen3_speaker": hst.get("qwen3_tts_speaker", ""),
-            "qwen3_instruct": hst.get("qwen3_tts_instruct", ""),
-            "silero": hst.get("silero_speaker", ""),
-            "piper": hst.get("piper_voice", ""),
-            "f5_ref": hst.get("f5_tts_ref_audio", ""),
-            "f5_ref_text": hst.get("f5_tts_ref_text", ""),
-            "omni_ref": hst.get("omnivoice_ref_audio", ""),
-            "omni_ref_text": hst.get("omnivoice_ref_text", ""),
-            "omni_instruct": hst.get("omnivoice_instruct", ""),
-        } for hst in hosts if isinstance(hst, dict)], ensure_ascii=False, sort_keys=True)
-        h = self.text_hash("|dialogue|" + json.dumps(segments, ensure_ascii=False) + "|" + str(self.cfg.get("tts_backend", "")) + "|" + voice_sig)
+        backend = str(self.cfg.get("tts_backend", ""))
+        voice_sig = [self._cache_signature(backend, str(hst.get("name", "")), self._voice_cfg_for_host(str(hst.get("name", "")), hst)) for hst in hosts if isinstance(hst, dict)]
+        h = self.text_hash("|dialogue|" + json.dumps(segments, ensure_ascii=False) + "|" + json.dumps(voice_sig, ensure_ascii=False, sort_keys=True))
         out_mp3 = self.cache_dir / f"dialogue_{h}.mp3"
         if out_mp3.exists() and out_mp3.stat().st_size > 1024:
             if self.cfg.get("tts_debug_log", True):
@@ -658,7 +742,7 @@ class TTS:
         last_error = ""
         for backend in backends:
             voice_cfg = self._voice_cfg_for_host(host_name, host_cfg)
-            h = self.text_hash(text + "|" + backend + "|" + host_name_or_empty(host_name) + "|" + str(voice_cfg.get("piper_voice", "")) + "|" + str(voice_cfg.get("silero_speaker", "")) + "|" + str(voice_cfg.get("qwen3_tts_model_id", "")) + "|" + str(voice_cfg.get("qwen3_tts_instruct", "")) + "|" + str(voice_cfg.get("qwen3_tts_speaker", "")) + "|" + str(voice_cfg.get("sapi_voice_contains", "")) + "|" + str(voice_cfg.get("lmstudio_tts_model", self.cfg.get("lmstudio_tts_model", ""))) + "|" + str(voice_cfg.get("lmstudio_tts_voice", self.cfg.get("lmstudio_tts_voice", ""))) + "|" + str(voice_cfg.get("lmstudio_tts_response_format", self.cfg.get("lmstudio_tts_response_format", ""))) + "|" + str(voice_cfg.get("omnivoice_ref_audio", "")) + "|" + str(voice_cfg.get("omnivoice_ref_text", "")) + "|" + str(voice_cfg.get("omnivoice_instruct", "")) + "|" + str(voice_cfg.get("omnivoice_steps", "")) + "|" + str(voice_cfg.get("omnivoice_speed", "")) + "|" + str(voice_cfg.get("omnivoice_pronunciation_file", "")))
+            h = self.text_hash(text + "|" + self._cache_signature(backend, host_name, voice_cfg))
             out_mp3 = self.cache_dir / f"host_{h}.mp3"
             if out_mp3.exists() and out_mp3.stat().st_size > 1024:
                 if self.cfg.get("tts_debug_log", True):
@@ -834,6 +918,14 @@ $synth.Dispose()
                 voice_cfg = dict(voice_cfg)
                 voice_cfg["omnivoice_mode"] = "design"
             else:
+                transcript = validate_reference_transcript(
+                    ref_text,
+                    expected_language=str(voice_cfg.get("reference_asr_language", "ru") or "ru"),
+                )
+                if not transcript.ok:
+                    log(f"OmniVoice: reference-текст отклонён: {transcript.error}")
+                    return None
+                ref_text = transcript.text
                 voice_cfg = dict(voice_cfg)
                 voice_cfg["omnivoice_ref_audio"] = str(ref_path)
                 voice_cfg["omnivoice_ref_text"] = ref_text
@@ -973,6 +1065,14 @@ $synth.Dispose()
         if not ref_text:
             log("F5-TTS: f5_tts_ref_text пустой. Нужна точная расшифровка reference audio, иначе F5 может подтянуть ASR и съесть лишнюю VRAM.")
             return None
+        transcript = validate_reference_transcript(
+            ref_text,
+            expected_language=str(voice_cfg.get("reference_asr_language", "ru") or "ru"),
+        )
+        if not transcript.ok:
+            log(f"F5-TTS: reference-текст отклонён: {transcript.error}")
+            return None
+        ref_text = transcript.text
         helper = BASE_DIR / "tools" / "f5_tts_render.py"
         if not helper.exists():
             log("F5-TTS backend скрыт/не установлен: tools\\f5_tts_render.py отсутствует. Используй OmniVoice/Piper или верни legacy tools.")
@@ -1139,8 +1239,12 @@ $synth.Dispose()
         return out_mp3.exists() and out_mp3.stat().st_size > 1024
 
     def cleanup_cache(self) -> None:
-        max_files = int(self.cfg.get("max_cached_spoken_files", 120))
-        files = sorted(self.cache_dir.glob("host_*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
+        max_files = max(1, int(self.cfg.get("max_cached_spoken_files", 120)))
+        files = sorted(
+            list(self.cache_dir.glob("host_*.mp3")) + list(self.cache_dir.glob("dialogue_*.mp3")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
         for p in files[max_files:]:
             try:
                 p.unlink()

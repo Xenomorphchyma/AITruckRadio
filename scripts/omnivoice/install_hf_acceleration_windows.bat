@@ -16,4 +16,10 @@ if not exist ".venv_omnivoice\Scripts\python.exe" (
   exit /b 1
 )
 ".venv_omnivoice\Scripts\python.exe" -m pip install -U huggingface_hub hf_xet
+if errorlevel 1 (
+  echo [ERROR] Hugging Face acceleration packages were not installed.
+  pause
+  exit /b 1
+)
 pause
+exit /b 0

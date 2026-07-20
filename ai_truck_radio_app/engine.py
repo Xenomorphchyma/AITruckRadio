@@ -43,18 +43,29 @@ from ai_truck_radio_app.context import (
     read_greeting_line,
     read_greeting_line_unique,
     read_news_line,
+    should_include_news,
     style_prompt,
 )
+from ai_truck_radio_app.audio_transition import music_speech_crossfade_command
 from ai_truck_radio_app.entertainment_agent import EntertainmentAgent
-from ai_truck_radio_app.entertainment_history import filter_unused, mark_used
+from ai_truck_radio_app.entertainment_history import (
+    filter_unused,
+    mark_aired as mark_entertainment_aired,
+    mark_used,
+    release_scheduled as release_entertainment_scheduled,
+)
 from ai_truck_radio_app.lmstudio import LMStudioClient
+from ai_truck_radio_app.news_agent import NewsAgent
+from ai_truck_radio_app.news_history import transition_item as transition_news_item
 from ai_truck_radio_app.server import make_ets2_line
+from ai_truck_radio_app.show_plan_store import ShowPlanStore
 from ai_truck_radio_app.text_processing import (
     clean_host_text,
     context_violations_for_host_text,
     normalize_omnivoice_nonverbal_tags,
     normalize_generated_radio_text,
     postprocess_host_text_for_air,
+    parse_dialogue_segments,
     repair_time_context_text,
     sanitize_general_radio_text,
     soften_tts_exclamations,
@@ -84,6 +95,9 @@ class RadioEngine:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.tracks = scan_music(self.music_dir)
         self.track_queue: List[Track] = []
+        # The broadcast loop, show-plan preparation and panel actions can all
+        # inspect the queue.  Keep queue/reservation changes as one atomic unit.
+        self.track_lock = threading.RLock()
         self.previous_track: Optional[Track] = None
         self.reserved_next_track: Optional[Track] = None
         self.last_station_id_track_index = -9999
@@ -91,11 +105,17 @@ class RadioEngine:
         self.next_dj_after = self._random_dj_gap()
         self.lm = LMStudioClient(cfg)
         self.entertainment_agent = EntertainmentAgent(cfg, self.lm)
+        self.news_agent = NewsAgent(cfg, self.lm)
         self.tts = TTS(cfg)
+        self.tts_service_lock = threading.RLock()
+        self.tts_service_thread: Optional[threading.Thread] = None
+        self.tts_service_status = "not_initialized"
+        self.tts_service_error = ""
         self.weather = WeatherClient(cfg)
         self.track_profiles = load_track_profiles(cfg) if cfg.get("track_profiles_enabled", True) else {}
 
-        self.state_lock = threading.Lock()
+        self.state_lock = threading.RLock()
+        self.lifecycle_lock = threading.RLock()
         self.subs_lock = threading.Lock()
         self.subscribers: Dict[int, queue.Queue[Optional[bytes]]] = {}
         self.next_sub_id = 1
@@ -125,15 +145,25 @@ class RadioEngine:
         )
         self.show_plan: List[PlannedItem] = []
         self.show_plan_index = 0
+        self.show_plan_active_index = -1
+        self._show_plan_stale_audio_ids: set[int] = set()
         self.show_plan_status = "плановый режим выключен"
         self.next_show_plan: List[PlannedItem] = []
         self.plan_prepare_thread: Optional[threading.Thread] = None
-        self.plan_lock = threading.Lock()
+        self.plan_lock = threading.RLock()
+        self.plan_build_lock = threading.Lock()
+        self._run_generation = 0
+        self._plan_generation = 0
+        self._plan_cancel_requested_generation: Optional[int] = None
+        self._prepare_generation = 0
+        self._startup_in_progress = False
         self.track_profile_thread: Optional[threading.Thread] = None
         self.track_profile_status = "профили треков не обновлялись"
         self.track_profile_progress: Dict[str, Any] = {"current": 0, "total": 0, "percent": 0, "detail": ""}
         self.show_plan_progress: Dict[str, Any] = {"current": 0, "total": 0, "percent": 0, "detail": ""}
         self.show_plan_last_generation_sec = 0.0
+        self.pending_music_speech_transition: Optional[Tuple[Path, Path, float, float]] = None
+        self.pending_live_segment: Optional[PreparedDJ] = None
 
         self.entertainment_pack: Dict[str, Any] = {}
         self.entertainment_pack_date = ""
@@ -150,23 +180,45 @@ class RadioEngine:
         self.pending_riddle: Optional[Dict[str, Any]] = None
         self.last_riddle_block = -9999
         self.last_wrong_game_block = -9999
+        self.news_pack: Dict[str, Any] = {}
+        self.news_status = "новости ещё не обновлялись"
+        self.news_lock = threading.RLock()
+        self.news_thread: Optional[threading.Thread] = None
+        cached_news = self.news_agent.load_cache() if self.cfg.get("news_agent_enabled", True) else None
+        if cached_news:
+            self.news_pack = cached_news
+            self.news_status = "загружена сохранённая проверенная лента"
 
         self.stop_event = threading.Event()
         self.skip_event = threading.Event()
         self.startup_cancel_event = threading.Event()
         self.broadcast_thread: Optional[threading.Thread] = None
         self.startup_thread: Optional[threading.Thread] = None
+        self.show_plan_store = ShowPlanStore(
+            self._plan_output_path(),
+            music_root=self.music_dir,
+            cache_root=self.cache_dir,
+            max_items=int(self.cfg.get("show_plan_restore_max_items", 1000) or 1000),
+            max_age_hours=float(self.cfg.get("show_plan_restore_max_age_hours", 168) or 168),
+        )
+        self._restore_saved_show_plan()
 
     def is_running(self) -> bool:
-        return bool(self.broadcast_thread and self.broadcast_thread.is_alive() and not self.stop_event.is_set())
+        with self.lifecycle_lock:
+            return bool(self.broadcast_thread and self.broadcast_thread.is_alive() and not self.stop_event.is_set())
 
     def is_starting(self) -> bool:
-        return bool(self.startup_thread and self.startup_thread.is_alive())
+        with self.lifecycle_lock:
+            return bool(self._startup_in_progress or (self.startup_thread and self.startup_thread.is_alive()))
 
     def start_async(self, clean_generated: Optional[bool] = None) -> bool:
-        if self.is_running() or self.is_starting():
-            return False
-        self.startup_cancel_event.clear()
+        with self.lifecycle_lock:
+            if self._startup_in_progress or (self.startup_thread and self.startup_thread.is_alive()) or (self.broadcast_thread and self.broadcast_thread.is_alive() and not self.stop_event.is_set()):
+                return False
+            self._startup_in_progress = True
+            self._run_generation += 1
+            run_generation = self._run_generation
+            self.startup_cancel_event.clear()
         with self.state_lock:
             self.now_playing = "Эфир запускается"
             self.current_kind = "startup"
@@ -174,20 +226,33 @@ class RadioEngine:
 
         def worker() -> None:
             try:
-                self.start(clean_generated=clean_generated)
+                self._start_impl(clean_generated=clean_generated, run_generation=run_generation)
             except Exception as e:
                 self.set_error(f"Не удалось запустить радио: {e}")
                 with self.state_lock:
                     self.now_playing = "Ошибка запуска радио"
                     self.current_kind = "stopped"
                 log(f"Фоновый запуск радио завершился ошибкой: {e}")
+            finally:
+                with self.lifecycle_lock:
+                    if self._run_generation == run_generation:
+                        self._startup_in_progress = False
 
-        self.startup_thread = threading.Thread(target=worker, name="RadioStartup", daemon=True)
-        self.startup_thread.start()
+        thread = threading.Thread(target=worker, name="RadioStartup", daemon=True)
+        with self.lifecycle_lock:
+            self.startup_thread = thread
+        thread.start()
         return True
 
     def cleanup_generated_radio_files(self) -> Dict[str, int]:
         """Delete generated speech/planned-show leftovers, but keep user assets and track profiles."""
+        # Never remove files currently being streamed or written by a plan job.
+        # Server-side callers normally stop first; this guard makes direct use
+        # from integrations safe as well.
+        with self.lifecycle_lock, self.plan_lock:
+            if (self.broadcast_thread and self.broadcast_thread.is_alive()) or (self.plan_prepare_thread and self.plan_prepare_thread.is_alive()):
+                log("Очистка сгенерированных файлов пропущена: эфир или подготовка плана ещё работают")
+                return {"files": 0, "dirs": 0}
         targets = [
             self.cache_dir / "spoken",
             self.cache_dir / "tmp",
@@ -219,11 +284,14 @@ class RadioEngine:
         # Важно: если пользователь уже нажал "Сгенерировать план", старт радио
         # не должен выбрасывать этот план. Раньше именно это ломало плановый режим:
         # панель готовила речь/музыку, а кнопка "Включить радио" начинала всё с нуля.
-        keep_ready_plan = bool(self.cfg.get("show_plan_enabled", False) and self.show_plan)
-        kept_plan = self.show_plan if keep_ready_plan else []
-        kept_index = self.show_plan_index if keep_ready_plan else 0
-        kept_next = self.next_show_plan if keep_ready_plan else []
-        kept_status = self.show_plan_status
+        with self.plan_lock:
+            keep_ready_plan = bool(self.cfg.get("show_plan_enabled", False) and self.show_plan)
+            kept_plan = list(self.show_plan) if keep_ready_plan else []
+            kept_index = self.show_plan_index if keep_ready_plan else 0
+            kept_next = list(self.next_show_plan) if keep_ready_plan else []
+            kept_status = self.show_plan_status
+        if not keep_ready_plan and (self.show_plan or self.next_show_plan):
+            self.clear_show_plan(reason="план сброшен перед новым live-эфиром")
         with self.state_lock:
             self.now_playing = "Эфир готовится"
             self.current_kind = "startup"
@@ -231,29 +299,53 @@ class RadioEngine:
             self.last_error = ""
             self.skip_requested_by = ""
         with self.prepare_lock:
+            stale_prepared = self.prepared_dj
             self.prepared_dj = None
             self.prepared_status = "нет заранее готовой вставки"
-        self.track_queue = []
-        self.previous_track = None
-        self.reserved_next_track = None
+        if stale_prepared:
+            self._release_content_reservations(
+                history_keys=stale_prepared.history_keys,
+                news_items=stale_prepared.news_items,
+                mode="new_air_reset",
+            )
+        with self.track_lock:
+            self.track_queue = []
+            self.previous_track = None
+            self.reserved_next_track = None
         self.last_station_id_track_index = -9999
         self.played_since_dj = 0
         self.next_dj_after = self._random_dj_gap()
         self.intro_played_or_skipped = False
-        if keep_ready_plan:
-            self.show_plan = kept_plan
-            self.show_plan_index = min(max(0, kept_index), len(kept_plan))
-            self.next_show_plan = kept_next
-            self.show_plan_status = kept_status or f"готовый план ждёт запуска: {len(kept_plan)} элементов"
-        else:
-            self.show_plan = []
-            self.show_plan_index = 0
-            self.next_show_plan = []
-            self.show_plan_status = "плановый режим выключен" if not self.cfg.get("show_plan_enabled", False) else "план будет собран при запуске"
+        with self.plan_lock:
+            if keep_ready_plan:
+                self.show_plan = kept_plan
+                self.show_plan_index = min(max(0, kept_index), len(kept_plan))
+                self.show_plan_active_index = -1
+                self.next_show_plan = kept_next
+                self.show_plan_status = kept_status or f"готовый план ждёт запуска: {len(kept_plan)} элементов"
+            else:
+                self.show_plan = []
+                self.show_plan_index = 0
+                self.show_plan_active_index = -1
+                self.next_show_plan = []
+                self.show_plan_status = "плановый режим выключен" if not self.cfg.get("show_plan_enabled", False) else "план будет собран при запуске"
 
     def start(self, clean_generated: Optional[bool] = None) -> None:
-        if self.broadcast_thread and self.broadcast_thread.is_alive():
-            return
+        with self.lifecycle_lock:
+            if self._startup_in_progress or (self.startup_thread and self.startup_thread.is_alive()) or (self.broadcast_thread and self.broadcast_thread.is_alive() and not self.stop_event.is_set()):
+                return
+            self._startup_in_progress = True
+            self._run_generation += 1
+            run_generation = self._run_generation
+            self.startup_cancel_event.clear()
+        try:
+            self._start_impl(clean_generated=clean_generated, run_generation=run_generation)
+        finally:
+            with self.lifecycle_lock:
+                if self._run_generation == run_generation:
+                    self._startup_in_progress = False
+
+    def _start_impl(self, clean_generated: Optional[bool], run_generation: int) -> None:
         if clean_generated is None:
             clean_generated = bool(self.cfg.get("clean_generated_on_start", True))
         # Старт/стоп радио закрывает TTS worker. Persistent OmniVoice живёт только внутри
@@ -273,31 +365,51 @@ class RadioEngine:
             log(f"Старые сгенерированные файлы очищены: {stats['files']} файлов, {stats['dirs']} папок")
         self.lm = LMStudioClient(self.cfg)
         self.entertainment_agent = EntertainmentAgent(self.cfg, self.lm)
+        self.news_agent = NewsAgent(self.cfg, self.lm)
         self.weather = WeatherClient(self.cfg)
         self.track_profiles = load_track_profiles(self.cfg) if self.cfg.get("track_profiles_enabled", True) else {}
         try:
             self.tts.prewarm_omnivoice_worker(self.cfg.get("hosts") or [])
         except Exception as e:
             log(f"OmniVoice prewarm пропущен: {e}")
-        if self.startup_cancel_event.is_set():
+        if self.startup_cancel_event.is_set() or self._run_generation != run_generation:
             log("Запуск радио отменён во время подготовки OmniVoice")
             return
-        if self.cfg.get("entertainment_enabled", False) and self.cfg.get("horoscope_generate_before_radio", True):
+        prepare_guest = bool(self.cfg.get("guest_enabled", False) and self.cfg.get("guest_generate_before_radio", True))
+        prepare_rubrics = bool(self.cfg.get("horoscope_generate_before_radio", True))
+        if self.cfg.get("entertainment_enabled", False) and (prepare_rubrics or prepare_guest):
             try:
                 self.prepare_entertainment_pack("radio_start")
                 log("Рубрики перед эфиром готовы: " + self.entertainment_status)
             except Exception as e:
                 log(f"Не удалось подготовить рубрики перед эфиром: {e}")
-        if self.startup_cancel_event.is_set():
+        if self.startup_cancel_event.is_set() or self._run_generation != run_generation:
             log("Запуск радио отменён во время подготовки рубрик")
+            return
+        if (
+            self.cfg.get("news_enabled", True)
+            and self.cfg.get("news_agent_enabled", True)
+            and self.cfg.get("news_agent_generate_before_radio", True)
+        ):
+            self.prepare_news_pack("radio_start")
+        if self.startup_cancel_event.is_set() or self._run_generation != run_generation:
+            log("Запуск радио отменён во время подготовки новостей")
             return
         self.stop_event.clear()
         self.skip_event.clear()
         self._reset_runtime_state_for_new_air()
-        self.broadcast_thread = threading.Thread(target=self._broadcast_loop, name="RadioBroadcast", daemon=True)
-        self.broadcast_thread.start()
+        with self.lifecycle_lock:
+            if self.startup_cancel_event.is_set() or self._run_generation != run_generation or (self.broadcast_thread and self.broadcast_thread.is_alive()):
+                return
+            self.broadcast_thread = threading.Thread(target=self._broadcast_loop, name="RadioBroadcast", daemon=True)
+            self.broadcast_thread.start()
 
     def stop(self) -> None:
+        with self.lifecycle_lock:
+            self._run_generation += 1
+            self._plan_generation += 1
+            self._prepare_generation += 1
+            self._startup_in_progress = False
         self.startup_cancel_event.set()
         self.stop_event.set()
         self.skip_event.set()
@@ -317,6 +429,12 @@ class RadioEngine:
         self.stop()
         if self.broadcast_thread and self.broadcast_thread.is_alive():
             self.broadcast_thread.join(timeout=5.0)
+        if self.startup_thread and self.startup_thread.is_alive() and self.startup_thread is not threading.current_thread():
+            self.startup_thread.join(timeout=5.0)
+        if self.startup_thread and self.startup_thread.is_alive():
+            self.set_error("Предыдущая подготовка эфира ещё отменяется; повтори запуск через несколько секунд.")
+            log("Перезапуск отложен: предыдущая подготовка эфира ещё не завершилась")
+            return
         self.start(clean_generated=clean_generated)
 
     def request_skip(self, by: str = "panel") -> None:
@@ -372,37 +490,48 @@ class RadioEngine:
 
     def refresh_tracks(self) -> None:
         tracks = scan_music(self.music_dir)
-        with self.state_lock:
+        with self.track_lock:
             self.tracks = tracks
             self.track_queue = []
         log(f"Музыка пересканирована: {len(tracks)} файлов")
 
     def _refill_queue(self) -> None:
-        if not self.track_queue:
-            self.tracks = scan_music(self.music_dir)
-            self.track_queue = list(self.tracks)
-            if self.cfg.get("shuffle", True):
-                random.shuffle(self.track_queue)
+        with self.track_lock:
+            if not self.track_queue:
+                self.tracks = scan_music(self.music_dir)
+                self.track_queue = list(self.tracks)
+                if self.cfg.get("shuffle", True):
+                    random.shuffle(self.track_queue)
 
     def peek_next_track(self) -> Optional[Track]:
-        self._refill_queue()
-        return self.track_queue[0] if self.track_queue else None
+        with self.track_lock:
+            self._refill_queue()
+            return self.track_queue[0] if self.track_queue else None
 
     def pop_next_track(self) -> Optional[Track]:
         # Если ведущий уже объявил конкретный следующий трек, играем именно его.
-        reserved = getattr(self, "reserved_next_track", None)
-        if reserved is not None:
-            self.reserved_next_track = None
-            try:
-                self.track_queue = [x for x in self.track_queue if getattr(x, "path", None) != getattr(reserved, "path", None)]
-            except Exception:
-                pass
-            log(f"Играю зарезервированный объявленный трек: {reserved.display_name}")
-            return reserved
-        self._refill_queue()
-        if not self.track_queue:
-            return None
-        return self.track_queue.pop(0)
+        with self.track_lock:
+            reserved = self.reserved_next_track
+            if reserved is not None:
+                self.reserved_next_track = None
+                try:
+                    self.track_queue = [x for x in self.track_queue if getattr(x, "path", None) != getattr(reserved, "path", None)]
+                except Exception:
+                    pass
+                log(f"Играю зарезервированный объявленный трек: {reserved.display_name}")
+                return reserved
+            self._refill_queue()
+            if not self.track_queue:
+                return None
+            return self.track_queue.pop(0)
+
+    def _reserve_next_track(self, track: Optional[Track]) -> None:
+        """Reserve a track only once its announcement is actually going to air."""
+        if track is None:
+            return
+        with self.track_lock:
+            self.reserved_next_track = track
+        log(f"Зарезервирован следующий трек для объявленной вставки: {track.display_name}")
 
     def set_now(self, text: str, kind: str) -> None:
         with self.state_lock:
@@ -657,7 +786,7 @@ class RadioEngine:
             host['omnivoice_mode'] = 'clone'
             host['omnivoice_ref_audio'] = str(ref_audio)
             if ref_text.exists():
-                host['omnivoice_ref_text'] = str(ref_text)
+                host['omnivoice_ref_text'] = ref_text.read_text(encoding='utf-8-sig', errors='replace').strip()
         else:
             host['omnivoice_mode'] = 'design'
         return host
@@ -670,6 +799,111 @@ class RadioEngine:
         if not ref_text.is_absolute():
             ref_text = BASE_DIR / ref_text
         return {'audio': str(ref_audio), 'audio_exists': ref_audio.exists(), 'text': str(ref_text), 'text_exists': ref_text.exists()}
+
+    def prepare_news_pack(self, reason: str = "auto", *, force: bool = False) -> Dict[str, Any]:
+        """Build one auditable news pack and keep its editorial state visible."""
+        if not self.cfg.get("news_enabled", True) or not self.cfg.get("news_agent_enabled", True):
+            with self.news_lock:
+                self.news_pack = {}
+                self.news_status = "агент новостей выключен"
+            return {}
+        with self.news_lock:
+            self.news_status = "собираю и проверяю новости..."
+        try:
+            pack = self.news_agent.build(force=force)
+            items = [item for item in (pack.get("items") or []) if isinstance(item, dict)]
+            verified = sum(1 for item in items if item.get("status") == "verified")
+            review = sum(1 for item in items if item.get("status") == "review")
+            fallback = bool(pack.get("fallback_used"))
+            status = (
+                f"новости готовы: {verified} проверено, {review} требуют внимания"
+                + ("; используется файл" if fallback else "")
+            )
+            with self.news_lock:
+                self.news_pack = pack
+                self.news_status = status
+            log(f"NewsAgent ({reason}): {status}")
+            return pack
+        except Exception as exc:
+            with self.news_lock:
+                self.news_status = f"ошибка обновления новостей: {exc}"
+            log(self.news_status)
+            return {}
+
+    def start_news_refresh(self) -> bool:
+        with self.news_lock:
+            if self.news_thread and self.news_thread.is_alive():
+                return False
+            self.news_status = "обновляю и перепроверяю новостную ленту..."
+
+            def worker() -> None:
+                self.prepare_news_pack("editor_refresh", force=True)
+
+            self.news_thread = threading.Thread(target=worker, name="NewsRefresh", daemon=True)
+            self.news_thread.start()
+            return True
+
+    def set_news_item_status(self, draft_id: str, status: str) -> Dict[str, Any]:
+        target = str(status or "").strip().casefold()
+        if target not in {"verified", "rejected"}:
+            raise ValueError("Допустимо только подтвердить или отклонить новость.")
+        identifier = str(draft_id or "").strip()
+        with self.news_lock:
+            pack = dict(self.news_pack or self.news_agent.load_cache() or {})
+            items = [dict(item) for item in (pack.get("items") or []) if isinstance(item, dict)]
+            for index, item in enumerate(items):
+                if str(item.get("draft_id") or "") != identifier:
+                    continue
+                if str(item.get("status") or "") != "review":
+                    raise ValueError("Редакторское решение можно изменить только у новости на проверке.")
+                items[index] = transition_news_item(
+                    self.cfg,
+                    item,
+                    target,
+                    reason="editor_approved" if target == "verified" else "editor_rejected",
+                    mode="editor",
+                    persist=True,
+                )
+                pack["items"] = items
+                save_json(self.news_agent._cache_path(), pack)
+                self.news_pack = pack
+                self.news_status = "редакторское решение сохранено"
+                return items[index]
+        raise ValueError("Новость не найдена.")
+
+    def _reserve_news_for_context(self, *, planned: bool) -> List[Dict[str, Any]]:
+        if not self.cfg.get("news_agent_enabled", True):
+            return []
+        with self.news_lock:
+            pack = dict(self.news_pack)
+        if not pack:
+            pack = self.prepare_news_pack("speech_block")
+        item = self.news_agent.select_next(pack, mode="planned" if planned else "live") if pack else None
+        return [item] if item else []
+
+    def _release_content_reservations(
+        self,
+        *,
+        history_keys: List[str] | None = None,
+        news_items: List[Dict[str, Any]] | None = None,
+        mode: str = "cancelled",
+    ) -> None:
+        release_entertainment_scheduled(self.cfg, history_keys or [])
+        for item in news_items or []:
+            if isinstance(item, dict) and item.get("status") == "scheduled":
+                try:
+                    self.news_agent.release(item, mode=mode)
+                except Exception as exc:
+                    log(f"Не удалось освободить резерв новости: {exc}")
+
+    def _mark_content_aired(self, history_keys: List[str], news_items: List[Dict[str, Any]], *, mode: str) -> None:
+        mark_entertainment_aired(self.cfg, history_keys)
+        for item in news_items:
+            if isinstance(item, dict) and item.get("status") == "scheduled":
+                try:
+                    self.news_agent.mark_aired(item, mode=mode)
+                except Exception as exc:
+                    log(f"Не удалось записать выход новости: {exc}")
 
     def prepare_entertainment_pack(self, reason: str = 'auto') -> Dict[str, Any]:
         if not self.cfg.get('entertainment_enabled', False):
@@ -711,14 +945,15 @@ class RadioEngine:
                 self.entertainment_status = 'загадки взяты из веб-источника'
         need_lm_hor = horoscope_mode != 'web_only' and (not pack.get('horoscope') or horoscope_mode == 'lm_by_date')
         need_lm_riddles = riddle_mode != 'web_only' and (not pack.get('riddles') or riddle_mode == 'lm_by_date')
-        if self.cfg.get('entertainment_generate_with_lm', True) and self.cfg.get('lm_enabled', True) and (need_lm_hor or need_lm_riddles or self.cfg.get('wrong_answer_game_enabled', True) or self.cfg.get('guest_enabled', False)):
+        allow_unverified_guest = bool(self.cfg.get("guest_allow_unverified_lm", False))
+        if self.cfg.get('entertainment_generate_with_lm', True) and self.cfg.get('lm_enabled', True) and (need_lm_hor or need_lm_riddles or self.cfg.get('wrong_answer_game_enabled', True) or (self.cfg.get('guest_enabled', False) and allow_unverified_guest)):
             try:
                 prompt = (
                     f'Дата сегодня: {current_time_text()}. Создай JSON для развлекательного музыкального радио. '
                     'Нужны: horoscope — 12 знаков зодиака с коротким актуальным дружелюбным прогнозом на сегодня; '
                     'riddles — 8 загадок с 4 вариантами ответа, правильным ответом и коротким объяснением; '
                     'wrong_games — 8 вопросов для игры “ответь неправильно”: вопрос, правильный ответ, 3 смешных явно неправильных ответа и комментарий; '
-                    'guest_stories — 6 коротких историй для гостя/слушателя в эфире, без политики, медицины и личных данных. '
+                    + ('guest_stories — 6 коротких вымышленных историй для гостя/слушателя, явно без фактических утверждений. ' if allow_unverified_guest else '') +
                     'Никакой политики, медицины, финансовых советов. Не пиши markdown. Только JSON с ключами horoscope, riddles, wrong_games, guest_stories.'
                 )
                 txt = self.lm.generate_plain_text(
@@ -739,7 +974,7 @@ class RadioEngine:
                     pack['riddles'] = riddles[:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
                 if isinstance(wrong_games, list) and wrong_games:
                     pack['wrong_games'] = wrong_games[:max(1, int(self.cfg.get('entertainment_pack_max_items', 12) or 12))]
-                if isinstance(guest_stories, list) and guest_stories:
+                if allow_unverified_guest and isinstance(guest_stories, list) and guest_stories:
                     pack['guest_stories'] = guest_stories[:max(1, int(self.cfg.get('guest_story_count', 6) or 6))]
                 self.entertainment_status = 'рубрики подготовлены через web/LM Studio'
             except Exception as e:
@@ -762,6 +997,28 @@ class RadioEngine:
             return {}
         if (not planned) and not self.cfg.get('entertainment_in_live', True):
             return {}
+        integration_mode = str(self.cfg.get("entertainment_integration_mode", "auto_mix") or "auto_mix").strip().lower()
+        if integration_mode not in {"auto_mix", "separate", "combine"}:
+            integration_mode = "auto_mix"
+
+        def apply_integration_mode(block: Dict[str, Any]) -> Dict[str, Any]:
+            """Make the configured rubric placement visible to the text model.
+
+            ``separate`` creates a self-contained rubric break, while ``combine``
+            explicitly ties the rubric back to the surrounding music.  ``auto_mix``
+            leaves the editor freedom to choose a natural balance.
+            """
+            if not block:
+                return block
+            instruction = str(block.get("entertainment_instruction") or "")
+            if integration_mode == "separate":
+                instruction += " Это отдельная рубрика: сначала закончи её, затем одной короткой фразой перейди к музыке; не смешивай с обсуждением трека."
+            elif integration_mode == "combine":
+                instruction += " Вплети рубрику в обычную подводку: свяжи её одной естественной фразой с предыдущим или следующим треком."
+            block["entertainment_instruction"] = instruction.strip()
+            block["entertainment_integration_mode"] = integration_mode
+            return block
+
         # Ответ на загадку имеет приоритет и должен выйти на следующей речи.
         if self.pending_riddle:
             r = self.pending_riddle
@@ -771,20 +1028,20 @@ class RadioEngine:
             q = str(r.get('question') or '')
             ans = str(r.get('answer') or '')
             expl = str(r.get('explanation') or '')
-            return {
+            return apply_integration_mode({
                 'entertainment_text': f'БЛОК ОТВЕТА НА ПРОШЛУЮ ЗАГАДКУ. Вопрос был: «{q}». Правильный ответ: {ans}. Объяснение: {expl}. НЕ задавай новую загадку в этом блоке.',
                 'entertainment_instruction': 'Сразу назови ответ на прошлую загадку, коротко обсуди его и пошути с соведущим. Нельзя говорить, что ответ будет завтра/утром/позже. Нельзя задавать новую загадку. Затем аккуратно подведи к следующей музыке.',
                 'dj_topic_label': 'ответ на загадку и музыкальная подводка',
                 'dj_length': 'medium',
                 'riddle_answer_block': True,
-            }
+            })
         if (current_block - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
             return {}
         if random.random() > float(self.cfg.get('entertainment_chance', 0.55) or 0.55):
             return {}
         pack = self.prepare_entertainment_pack('block')
         history_date = time.strftime("%Y-%m-%d")
-        history_mode = "planned" if planned else "live"
+        history_mode = "planned" if planned else "live_pending"
         # Гость в эфире: короткая история/звонок. Может вклиниваться реже остальных рубрик.
         guest_allowed = bool(self.cfg.get('guest_enabled', False)) and ((planned and self.cfg.get('guest_in_planned', True)) or ((not planned) and self.cfg.get('guest_in_live', True)))
         if guest_allowed and (current_block - self.last_guest_block) >= int(self.cfg.get('guest_min_blocks_between', 6) or 6):
@@ -792,40 +1049,42 @@ class RadioEngine:
                 guests = filter_unused(self.cfg, "guest_story", pack.get('guest_stories') or [])
                 if guests:
                     g = random.choice(guests)
-                    mark_used(self.cfg, "guest_story", g, mode=history_mode)
+                    history_key = mark_used(self.cfg, "guest_story", g, mode=history_mode)
                     self.last_guest_block = current_block
                     self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
-                    return {
+                    return apply_integration_mode({
                         'entertainment_text': 'Гость в эфире. История гостя: ' + json.dumps(g, ensure_ascii=False),
                         'entertainment_instruction': 'Сделай короткий живой разговор с гостем. Ведущий задаёт 1 вопрос, Гость отвечает историей, второй ведущий может улыбнуться/пошутить. Затем мягко подведите к следующей музыке.',
                         'dj_topic_label': 'гость в эфире и музыкальная подводка',
                         'dj_length': 'medium',
                         'force_guest': True,
-                    }
+                        'entertainment_history_keys': [history_key],
+                    })
         # Игра “ответь неправильно” может вклиниться между гороскопами/загадками.
         if self.cfg.get('wrong_answer_game_enabled', True) and (current_block - self.last_wrong_game_block) >= int(self.cfg.get('wrong_answer_game_min_blocks_between', 4) or 4):
             if random.random() < float(self.cfg.get('wrong_answer_game_chance', 0.18) or 0.18):
                 games = filter_unused(self.cfg, "wrong_game", pack.get('wrong_games') or [])
                 if games:
                     g = random.choice(games)
-                    mark_used(self.cfg, "wrong_game", g, mode=history_mode)
+                    history_key = mark_used(self.cfg, "wrong_game", g, mode=history_mode)
                     self.last_wrong_game_block = current_block
                     self.last_entertainment_block = current_block
                     self.entertainment_block_count += 1
-                    return {
+                    return apply_integration_mode({
                         'entertainment_text': 'Мини-игра «ответь неправильно». ' + json.dumps(g, ensure_ascii=False),
                         'entertainment_instruction': 'Один ведущий задаёт вопрос, второй должен ответить явно неправильно. Если ответ хоть как-то правильный или хитро правдивый — он проиграл. Обсудите это весело и коротко, затем подведите к следующей музыке.',
                         'dj_topic_label': 'игра «ответь неправильно» и музыкальная подводка',
                         'dj_length': 'medium',
-                    }
+                        'entertainment_history_keys': [history_key],
+                    })
         # Чередование: 2–3 гороскопа, затем загадка.
         if self.cfg.get('riddles_enabled', True) and self.horoscope_blocks_since_riddle >= self.horoscope_blocks_before_riddle_target:
             if (current_block - self.last_riddle_block) >= int(self.cfg.get('riddle_min_blocks_between', 3) or 3):
                 riddles = filter_unused(self.cfg, "riddle", pack.get('riddles') or [])
                 if riddles:
                     r = random.choice(riddles)
-                    mark_used(self.cfg, "riddle", r, mode=history_mode)
+                    history_key = mark_used(self.cfg, "riddle", r, mode=history_mode)
                     self.pending_riddle = r
                     self.last_riddle_block = current_block
                     self.last_entertainment_block = current_block
@@ -834,14 +1093,15 @@ class RadioEngine:
                         max(1, int(self.cfg.get('horoscope_blocks_before_riddle_min', 2) or 2)),
                         max(1, int(self.cfg.get('horoscope_blocks_before_riddle_max', 3) or 3)),
                     )
-                    opts = r.get('options') or []
-                    return {
+                    opts = self._riddle_options(r)
+                    return apply_integration_mode({
                         'entertainment_text': f'БЛОК НОВОЙ ЗАГАДКИ. Загадка: {r.get("question", "")}. Варианты ответа: {", ".join(map(str, opts))}. НЕ называй правильный ответ сейчас. Скажи строго: ответ прозвучит в следующий выход ведущих после одной из песен. Не говори завтра, утром или вечером.',
                         'entertainment_instruction': 'Задай загадку с вариантами, оставь интригу только до следующего выхода ведущих. Запрещено обещать ответ завтра/утром/вечером. Затем подведи к следующей музыке.',
                         'dj_topic_label': 'загадка с вариантами ответа',
                         'dj_length': 'medium',
                         'riddle_question_block': True,
-                    }
+                        'entertainment_history_keys': [history_key],
+                    })
         if self.cfg.get('horoscope_enabled', True):
             hor = filter_unused(self.cfg, "horoscope", pack.get('horoscope') or [], history_date)
             if hor:
@@ -849,21 +1109,49 @@ class RadioEngine:
                 hi = max(lo, int(self.cfg.get('horoscope_chunk_max', 3) or 3))
                 count = random.randint(lo, hi)
                 chunk = hor[:count]
-                for item in chunk:
+                history_keys = [
                     mark_used(self.cfg, "horoscope", item, date=history_date, mode=history_mode)
+                    for item in chunk
+                ]
                 self.horoscope_index += len(chunk)
                 self.horoscope_blocks_since_riddle += 1
                 self.last_entertainment_block = current_block
                 self.entertainment_block_count += 1
                 done = len(chunk) >= len(hor)
-                return {
+                return apply_integration_mode({
                     'entertainment_text': 'Гороскоп на сегодня. Обязательно назови каждый знак отдельно в формате «Овен: ...», «Телец: ...». Знаки и тексты: ' + json.dumps(chunk, ensure_ascii=False) + (' Это последний блок гороскопа, после него больше не объявляй гороскопы.' if done else ' В конце можно сказать, что остальные знаки продолжим в следующий раз.'),
                     'entertainment_instruction': 'Прочитай каждый переданный прогноз по смыслу полностью, без пересказа вида «прогноз был про любовь». Название знака не изменяй и пиши строго «Знак: прогноз». Затем сделай обычную подводку к следующей музыке.',
                     'horoscope_expected': chunk,
                     'dj_topic_label': 'гороскоп и музыкальная подводка',
                     'dj_length': 'medium',
-                }
+                    'entertainment_history_keys': history_keys,
+                })
         return {}
+
+    def _riddle_options(self, riddle: Dict[str, Any]) -> List[str]:
+        """Return the configured number of distinct answer options, always with the answer."""
+        try:
+            desired = int(self.cfg.get("riddle_options_count", 4) or 4)
+        except (TypeError, ValueError):
+            desired = 4
+        desired = max(2, min(6, desired))
+        answer = str(riddle.get("answer") or "").strip()
+        options: List[str] = []
+        seen = set()
+        for raw in list(riddle.get("options") or []) + ([answer] if answer else []):
+            value = str(raw or "").strip()
+            key = value.casefold()
+            if value and key not in seen:
+                options.append(value)
+                seen.add(key)
+        if len(options) <= desired:
+            return options
+        answer_key = answer.casefold()
+        selected = [answer] if answer and answer_key in seen else []
+        extras = [value for value in options if value.casefold() != answer_key]
+        selected.extend(random.sample(extras, k=max(0, desired - len(selected))))
+        random.shuffle(selected)
+        return selected
 
     def build_context(self, selected_hosts: Optional[List[Dict[str, Any]]] = None, two_hosts: Optional[bool] = None, intro_allowed_override: Optional[bool] = None, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         night = is_night_now(self.cfg)
@@ -909,9 +1197,19 @@ class RadioEngine:
         if self.cfg.get("weather_enabled", False):
             if intro_allowed or random.random() < float(self.cfg.get("weather_context_chance", 0.25)):
                 weather_text = self.weather.get_weather_text()
-        news_text = ""
-        if self.cfg.get("news_enabled", True) and random.random() < float(self.cfg.get("news_chance", 0.35)):
-            news_text = read_news_line(self.cfg)
+        planned_mode = bool(overrides and overrides.get("plan_mode") == "prepared_program")
+        news_items: List[Dict[str, Any]] = []
+        if overrides is not None and "news_text" in overrides:
+            news_text = str(overrides.get("news_text") or "")
+            news_items = [dict(item) for item in (overrides.get("news_items") or []) if isinstance(item, dict)]
+        else:
+            news_text = ""
+            if should_include_news(self.cfg):
+                news_items = self._reserve_news_for_context(planned=planned_mode)
+                if news_items:
+                    news_text = str(news_items[0].get("summary") or "").strip()
+                else:
+                    news_text = read_news_line(self.cfg)
         greeting_text = ""
         if self.cfg.get("listener_greetings_enabled", True):
             due = (self.tracks_played - self.last_greeting_track_index) >= max(1, int(self.next_greeting_after or 1))
@@ -919,7 +1217,6 @@ class RadioEngine:
             if due and (intro_allowed or chance_ok):
                 greeting_text = read_greeting_line(self.cfg)
         dj_plan = self._choose_dj_plan(bool(intro_allowed), bool(news_text), bool(weather_text))
-        planned_mode = bool(overrides and overrides.get("plan_mode") == "prepared_program")
         entertainment_block_index: Optional[int] = None
         if overrides and overrides.get("speech_blocks_played") not in [None, ""]:
             try:
@@ -955,6 +1252,7 @@ class RadioEngine:
             "weather_text": weather_text,
             "weather_city": str(self.cfg.get("weather_city") or "").strip(),
             "news_text": news_text,
+            "news_items": news_items,
             "greeting_text": greeting_text,
             "two_hosts": bool(two_hosts and len(selected_hosts or []) >= 2),
             "hosts": selected_hosts or [],
@@ -1030,9 +1328,10 @@ class RadioEngine:
                 if context_violations_for_host_text(text, ctx):
                     log("LM Studio всё ещё путает время/контекст — применяю последнюю безопасную чистку перед TTS")
                     text = repair_time_context_text(text, ctx)
-                # For an opening where the selected mode is duo, the second host is mandatory.
-                # Do not let old configs silently disable this with strict_duo_intro_require_both=False.
-                if intro_allowed and two and len(selected_hosts) >= 2:
+                # Requiring both hosts is a user policy, not an unconditional
+                # runtime rule.  When disabled, a valid solo opening is allowed.
+                if (self.cfg.get("strict_duo_intro_require_both", True)
+                        and intro_allowed and two and len(selected_hosts) >= 2):
                     attempts = max(2, int(self.cfg.get("strict_duo_intro_retry_attempts", 4) or 4))
                     missing = _duo_missing_names(text)
                     for attempt in range(1, attempts + 1):
@@ -1049,6 +1348,11 @@ class RadioEngine:
                     if missing:
                         self.set_error("LM Studio не смогла дать стартовый диалог с обоими ведущими. Вставка отклонена, чтобы не выпускать соло вместо диалога.")
                         log("Стартовая вставка отклонена: LM Studio так и не дала обоих ведущих без служебных ремарок")
+                        self._release_content_reservations(
+                            history_keys=list(ctx.get("entertainment_history_keys") or []),
+                            news_items=list(ctx.get("news_items") or []),
+                            mode="dialogue_rejected",
+                        )
                         return None
                 final_violations = context_violations_for_host_text(text, ctx)
                 if final_violations:
@@ -1101,6 +1405,11 @@ class RadioEngine:
         if not mp3:
             self.set_error("Не удалось создать озвучку ведущего. Радио продолжит музыку без вставки.")
             log("DJ segment: текст есть, но TTS не вернул mp3")
+            self._release_content_reservations(
+                history_keys=list(ctx.get("entertainment_history_keys") or []),
+                news_items=list(ctx.get("news_items") or []),
+                mode="tts_failed",
+            )
             return None
         if self.cfg.get("tts_debug_log", True):
             try:
@@ -1119,15 +1428,14 @@ class RadioEngine:
                     self.last_hour_announcement_hour = time.localtime().tm_hour
             except Exception:
                 pass
-        if next_track is not None and bool(self.cfg.get("startup_intro_reserve_first_track", True)):
-            self.reserved_next_track = next_track
-            log(f"Зарезервирован следующий трек для объявленной вставки: {next_track.display_name}")
         return PreparedDJ(
             mp3=mp3,
             text=text,
             previous_key=track_key(previous_track),
             next_key=track_key(next_track),
             created_ts=time.time(),
+            history_keys=list(ctx.get("entertainment_history_keys") or []),
+            news_items=[dict(item) for item in (ctx.get("news_items") or []) if isinstance(item, dict)],
         )
 
     def make_dj_mp3(self) -> Optional[Path]:
@@ -1140,7 +1448,8 @@ class RadioEngine:
         ):
             prepared = self.take_late_startup_intro_if_any()
         if prepared:
-            self._record_host_text_as_aired(prepared.text)
+            self._reserve_next_track(self.peek_next_track())
+            self.pending_live_segment = prepared
             self.played_since_dj = 0
             self.next_dj_after = self._random_dj_gap()
             return prepared.mp3
@@ -1149,6 +1458,8 @@ class RadioEngine:
             log("Live: вставка ведущих обязательна по интервалу, готовлю синхронно перед следующей музыкой")
             seg = self.create_dj_segment(self.previous_track, self.peek_next_track(), intro_allowed=False, mark_aired=True)
             if seg:
+                self._reserve_next_track(self.peek_next_track())
+                self.pending_live_segment = seg
                 self.played_since_dj = 0
                 self.next_dj_after = self._random_dj_gap()
                 return seg.mp3
@@ -1168,6 +1479,7 @@ class RadioEngine:
 
         seg = self.create_dj_segment(self.previous_track, self.peek_next_track(), intro_allowed=self.speech_blocks_played == 0, mark_aired=True)
         if seg:
+            self.pending_live_segment = seg
             self.played_since_dj = 0
             self.next_dj_after = self._random_dj_gap()
             return seg.mp3
@@ -1226,6 +1538,7 @@ class RadioEngine:
             if self.prepared_dj and self.prepared_dj.previous_key == track_key(current_track) and self.prepared_dj.next_key == track_key(next_track):
                 return
             self.prepared_status = f"готовлю следующую вставку ведущих заранее ({reason}) во время текущего трека..."
+            generation = self._prepare_generation
             log(f"Live: заранее готовлю ведущих ({reason}) после трека: {current_track.display_name}; следующий: {next_track.display_name if next_track else 'не выбран'}")
 
         def worker() -> None:
@@ -1241,10 +1554,25 @@ class RadioEngine:
                         time_offset = 0.0
                 seg = self.create_dj_segment(current_track, next_track, intro_allowed=False, mark_aired=False, context_overrides={"time_offset_sec": time_offset} if time_offset > 0 else None)
                 with self.prepare_lock:
+                    if generation != self._prepare_generation or self.stop_event.is_set():
+                        if seg:
+                            self._release_content_reservations(
+                                history_keys=seg.history_keys,
+                                news_items=seg.news_items,
+                                mode="stale_prepare",
+                            )
+                        return
+                    previous_prepared = self.prepared_dj
                     self.prepared_dj = seg
                     self.prepared_status = "вставка ведущих подготовлена" if seg else "не удалось подготовить вставку"
                 if seg:
                     log("Следующая вставка ведущих заранее подготовлена")
+                if previous_prepared and previous_prepared is not seg:
+                    self._release_content_reservations(
+                        history_keys=previous_prepared.history_keys,
+                        news_items=previous_prepared.news_items,
+                        mode="prepare_replaced",
+                    )
             except Exception as e:
                 with self.prepare_lock:
                     self.prepared_status = f"ошибка подготовки: {e}"
@@ -1379,7 +1707,7 @@ class RadioEngine:
             self.last_station_id_track_index = self.tracks_played
             self.set_now("Фирменная вставка станции", "station_id")
             log(f"Station ID между треками: {sid.name}")
-            ok = self._stream_path_plain_to_broadcast(sid, "jingle")
+            ok = self._stream_path_plain_to_broadcast(sid, "station_id")
             self._transition_pause()
             return ok
         if self.cfg.get("station_id_fallback_tts_enabled", False):
@@ -1391,7 +1719,7 @@ class RadioEngine:
                 self.last_station_id_track_index = self.tracks_played
                 self.set_now("Фирменная вставка станции", "station_id")
                 log("Station ID fallback TTS: " + text)
-                ok = self._stream_path_to_broadcast(mp3, "speech")
+                ok = self._stream_path_plain_to_broadcast(mp3, "station_id")
                 self._transition_pause()
                 return ok
         return False
@@ -1517,6 +1845,8 @@ class RadioEngine:
             volume_filter = f",volume={clamp(float(self.cfg.get('speech_voice_volume', 1.45)), 0.1, 3.0):.3f}"
         elif kind == "music":
             volume_filter = f",volume={clamp(float(self.cfg.get('music_volume', 0.78)), 0.1, 1.5):.3f}"
+        elif kind == "station_id":
+            volume_filter = f",volume={clamp(float(self.cfg.get('station_id_volume', 1.0)), 0.0, 2.0):.3f}"
         cmd += [
             "-vn",
             "-af", (self._audio_filter(path, kind, filter_duration) + volume_filter),
@@ -1574,7 +1904,9 @@ class RadioEngine:
         return ok
 
     def _stream_path_to_broadcast(self, path: Path, kind: str) -> bool:
-        if kind == "speech" and self.cfg.get("speech_bed_enabled", True):
+        # speech_bed_mode is canonical; speech_bed_enabled is only a migrated
+        # compatibility mirror kept for old config files/panels.
+        if kind == "speech" and str(self.cfg.get("speech_bed_mode", "generated") or "generated").lower().strip() != "off":
             return self._stream_speech_with_bed_to_broadcast(path)
         return self._stream_path_plain_to_broadcast(path, kind)
 
@@ -1612,30 +1944,51 @@ class RadioEngine:
         if planned_dj_after and self.cfg.get("live_prepare_at_track_start_when_due", True):
             self.start_prepare_dj_for_after_track(track, reason="track_start")
         self._start_live_prepare_timer_for_track(track, planned_dj_after)
-        """Stream music. If a DJ block is planned right after it, trim the last second
-        and fade at the trim point so speech can enter immediately instead of silence.
-        This is a practical radio segue: not a full two-source crossfade yet, but it
-        feels like the host catches the tail of the song instead of waiting in dead air.
-        """
+        """Stream music and reserve its tail for a true music-to-speech crossfade."""
         limit_sec: Optional[float] = None
         if planned_dj_after and self.cfg.get("speech_takeover_enabled", True):
             duration = ffprobe_duration(self.cfg, track.path)
             takeover = max(0.0, float(self.cfg.get("speech_takeover_sec", 1.15)))
             min_track = max(1.0, float(self.cfg.get("speech_takeover_min_track_sec", 45.0)))
             if duration and takeover > 0.05 and duration > min_track + takeover:
-                if self.cfg.get("speech_takeover_only_if_prepared", False):
-                    with self.prepare_lock:
-                        can_takeover = bool(
-                            self.prepared_dj
-                            and self.prepared_dj.previous_key == track_key(track)
-                            and self.prepared_dj.next_key == track_key(self.peek_next_track())
-                        )
-                else:
-                    can_takeover = True
+                prepared: Optional[PreparedDJ] = None
+                with self.prepare_lock:
+                    if (
+                        self.prepared_dj
+                        and self.prepared_dj.previous_key == track_key(track)
+                        and self.prepared_dj.next_key == track_key(self.peek_next_track())
+                    ):
+                        prepared = self.prepared_dj
+                can_takeover = bool(prepared) if self.cfg.get("speech_takeover_only_if_prepared", False) else True
                 if can_takeover:
                     limit_sec = max(1.0, duration - takeover)
+                    if prepared and self.cfg.get("speech_takeover_crossfade_enabled", True):
+                        self.pending_music_speech_transition = (track.path, prepared.mp3, float(duration), takeover)
                     log(f"Radio segue: перехватываю хвост трека на {takeover:.1f} сек., чтобы ведущие вошли без тишины")
         return self._stream_path_plain_to_broadcast(track.path, "music", limit_sec=limit_sec)
+
+    def _stream_music_speech_crossfade(
+        self,
+        music_path: Path,
+        speech_path: Path,
+        music_duration: float,
+        overlap: float,
+    ) -> bool:
+        ffmpeg = str(self.cfg.get("ffmpeg_path", "ffmpeg"))
+        if not executable_exists(ffmpeg):
+            return False
+        cmd = music_speech_crossfade_command(
+            ffmpeg=ffmpeg,
+            music_path=music_path,
+            speech_path=speech_path,
+            music_duration_sec=music_duration,
+            overlap_sec=overlap,
+            bitrate_kbps=int(self.cfg.get("bitrate_kbps", 128) or 128),
+            music_volume=float(self.cfg.get("music_volume", 0.78) or 0.78),
+            speech_volume=float(self.cfg.get("speech_voice_volume", 1.45) or 1.45),
+        )
+        log(f"Radio crossfade: хвост музыки и начало речи смешиваются {overlap:.1f} сек.")
+        return self._run_ffmpeg_pipe_to_broadcast(cmd)
 
     def _broadcast_silence(self, seconds: float) -> None:
         ffmpeg = str(self.cfg.get("ffmpeg_path", "ffmpeg"))
@@ -1676,13 +2029,32 @@ class RadioEngine:
         mp3 = self.make_dj_mp3()
         if not mp3 or self.stop_event.is_set():
             return False
+        seg = self.pending_live_segment
+        self.pending_live_segment = None
         self.set_now("Ведущие в эфире", "speech")
         log("В эфире ведущие")
-        ok = self._stream_path_to_broadcast(mp3, "speech")
+        transition = self.pending_music_speech_transition
+        self.pending_music_speech_transition = None
+        if transition and transition[1].resolve() == mp3.resolve():
+            ok = self._stream_music_speech_crossfade(*transition)
+            if not ok and not self.stop_event.is_set() and not self.skip_event.is_set():
+                log("Crossfade не удался, вывожу речь обычным способом")
+                ok = self._stream_path_to_broadcast(mp3, "speech")
+        else:
+            ok = self._stream_path_to_broadcast(mp3, "speech")
         if ok:
+            if seg:
+                self._record_host_text_as_aired(seg.text)
+                self._mark_content_aired(seg.history_keys, seg.news_items, mode="live")
             with self.state_lock:
                 self.speech_blocks_played += 1
             self._stream_jingle_after_speech()
+        elif seg:
+            self._release_content_reservations(
+                history_keys=seg.history_keys,
+                news_items=seg.news_items,
+                mode="stream_failed",
+            )
         self._transition_pause()
         return ok
 
@@ -1704,16 +2076,22 @@ class RadioEngine:
             return False
         self.prepared_status = "стартовая вставка взята в эфир перед первой песней"
         if next_track is not None and bool(self.cfg.get("startup_intro_reserve_first_track", True)):
-            self.reserved_next_track = next_track
-            log(f"Стартовая вставка объявила первый трек, резервирую его: {next_track.display_name}")
-        self._record_host_text_as_aired(seg.text)
+            self._reserve_next_track(next_track)
         self.set_now("Ведущие открывают эфир", "speech")
         log("В эфире стартовая вставка ведущих перед первой песней")
         ok = self._stream_path_to_broadcast(seg.mp3, "speech")
         if ok:
+            self._record_host_text_as_aired(seg.text)
+            self._mark_content_aired(seg.history_keys, seg.news_items, mode="live")
             with self.state_lock:
                 self.speech_blocks_played += 1
             self._stream_jingle_after_speech()
+        else:
+            self._release_content_reservations(
+                history_keys=seg.history_keys,
+                news_items=seg.news_items,
+                mode="stream_failed",
+            )
         self._transition_pause()
         self.played_since_dj = 0
         self.next_dj_after = self._random_dj_gap()
@@ -1727,6 +2105,7 @@ class RadioEngine:
                 return
             self.prepared_dj = None
             self.prepared_status = "готовлю стартовую вставку ведущих..."
+            generation = self._prepare_generation
 
         def worker() -> None:
             try:
@@ -1734,6 +2113,14 @@ class RadioEngine:
                 log("Готовлю стартовую вставку ведущих")
                 seg = self.create_dj_segment(None, next_track, intro_allowed=True, mark_aired=False)
                 with self.prepare_lock:
+                    if generation != self._prepare_generation or self.stop_event.is_set():
+                        if seg:
+                            self._release_content_reservations(
+                                history_keys=seg.history_keys,
+                                news_items=seg.news_items,
+                                mode="stale_startup_prepare",
+                            )
+                        return
                     self.prepared_dj = seg
                     self.prepared_status = "стартовая вставка подготовлена" if seg else "стартовую вставку подготовить не удалось"
                 if seg:
@@ -1775,7 +2162,220 @@ class RadioEngine:
         out.parent.mkdir(parents=True, exist_ok=True)
         return out
 
-    def _build_preplanned_show(self) -> List[PlannedItem]:
+    def _restore_saved_show_plan(self) -> None:
+        if not self.cfg.get("show_plan_restore_on_start", True):
+            return
+        restored = self.show_plan_store.load()
+        if not restored.items:
+            if restored.reason not in {"saved plan not found", "saved plan is empty or too large"}:
+                log(f"Шоу-план не восстановлен: {restored.reason}")
+            return
+        with self.plan_lock:
+            self.show_plan = restored.items
+            self.show_plan_index = restored.next_index
+            self.show_plan_active_index = -1
+            self._show_plan_stale_audio_ids = {
+                id(restored.items[index])
+                for index in restored.stale_audio_indices
+                if 0 <= index < len(restored.items)
+            }
+            self.show_plan_status = (
+                f"восстановлен сохранённый план: {len(restored.items)} элементов, "
+                f"следующий № {restored.next_index + 1 if restored.next_index < len(restored.items) else 0}"
+            )
+
+    def clear_show_plan(self, *, reason: str = "план очищен") -> int:
+        with self.plan_lock:
+            discarded = [*self.show_plan[self.show_plan_index :], *self.next_show_plan]
+            count = len(discarded)
+            self._plan_generation += 1
+            self.show_plan = []
+            self.show_plan_index = 0
+            self.show_plan_active_index = -1
+            self._show_plan_stale_audio_ids.clear()
+            self.next_show_plan = []
+            self.show_plan_status = reason
+        history_keys = [key for item in discarded for key in item.history_keys]
+        news_items = [news for item in discarded for news in item.news_items]
+        self._release_content_reservations(
+            history_keys=history_keys,
+            news_items=news_items,
+            mode="plan_discarded",
+        )
+        try:
+            self._plan_output_path().unlink(missing_ok=True)
+        except Exception as exc:
+            log(f"Не удалось удалить сохранённый план: {exc}")
+        return count
+
+    def _save_current_show_plan(self) -> None:
+        """Persist an edited plan without exposing a client-selected file path."""
+        with self.plan_lock:
+            items = list(self.show_plan)
+            next_index = self.show_plan_index
+            stale_indices = {
+                index for index, item in enumerate(items) if id(item) in self._show_plan_stale_audio_ids
+            }
+        try:
+            self.show_plan_store.save(
+                items,
+                next_index=next_index,
+                stale_audio_indices=stale_indices,
+                metadata={"generation_seconds": self.show_plan_last_generation_sec},
+            )
+        except Exception as exc:
+            log(f"Не удалось сохранить отредактированный план эфира: {exc}")
+
+    def _show_plan_audio_is_current(self, item: PlannedItem) -> bool:
+        return item.kind == "speech" and id(item) not in self._show_plan_stale_audio_ids and item.path.is_file()
+
+    def get_show_plan_item_audio(self, index: int) -> Optional[Path]:
+        """Return a current, generated speech file for a one-based plan index."""
+        with self.plan_lock:
+            zero_index = index - 1
+            if zero_index < 0 or zero_index >= len(self.show_plan):
+                return None
+            item = self.show_plan[zero_index]
+            if not self._show_plan_audio_is_current(item):
+                return None
+            path = item.path.resolve()
+        # TTS plan audio is application-owned cache data.  Never turn an item
+        # index into an arbitrary local-file download endpoint.
+        try:
+            path.relative_to(self.cache_dir.resolve())
+        except ValueError:
+            return None
+        return path
+
+    def update_show_plan_item_text(self, index: int, text: str, *, rerender: bool) -> Dict[str, Any]:
+        """Edit a future speech item and either render matching audio or invalidate it.
+
+        A changed script is never served or aired with its previous MP3.  Clients
+        may save a draft (``rerender=False``), in which case audio is explicitly
+        unavailable until the same request is repeated with ``rerender=True``.
+        """
+        clean_text = str(text or "").strip()
+        max_chars = max(1, min(20_000, int(self.cfg.get("max_host_text_chars", 4000) or 4000)))
+        if not clean_text:
+            raise ValueError("Текст ведущего не может быть пустым.")
+        if len(clean_text) > max_chars:
+            raise ValueError(f"Текст ведущего длиннее допустимых {max_chars} символов.")
+        zero_index = index - 1
+        with self.plan_lock:
+            if zero_index < 0 or zero_index >= len(self.show_plan):
+                raise ValueError("Элемент шоу-плана не найден.")
+            if zero_index <= self.show_plan_active_index or zero_index < self.show_plan_index:
+                raise ValueError("Нельзя менять уже идущий или завершённый элемент эфира.")
+            item = self.show_plan[zero_index]
+            if item.kind != "speech":
+                raise ValueError("Редактировать текст можно только у речевого элемента.")
+            original_text = item.text
+
+        if not rerender:
+            with self.plan_lock:
+                item.text = clean_text
+                self._show_plan_stale_audio_ids.add(id(item))
+                self.show_plan_status = "текст шоу-плана изменён; для этого блока требуется озвучка"
+            self._save_current_show_plan()
+            return {"index": index, "text": clean_text, "audio_ready": False, "rerendered": False}
+
+        # Keep the previous text/audio pair published until the replacement is
+        # completely rendered.  A failed TTS request must not silently destroy
+        # the last playable version of the block.
+        with self.plan_lock:
+            self.show_plan_status = "переозвучиваю выбранный блок; прежняя озвучка пока сохранена"
+        try:
+            mp3 = self.tts.get_or_create_dialogue_mp3(clean_text, self.cfg.get("hosts") or [])
+            if not mp3 or not mp3.is_file():
+                raise RuntimeError("TTS не вернул аудиофайл.")
+            duration = float(ffprobe_duration(self.cfg, mp3) or item.duration_sec or 0.0)
+        except Exception as exc:
+            with self.plan_lock:
+                self.show_plan_status = "переозвучивание не удалось; прежняя озвучка сохранена"
+            raise ValueError(f"Не удалось переозвучить текст; прежняя озвучка сохранена: {exc}") from exc
+        with self.plan_lock:
+            # Do not publish an MP3 if a later edit changed the same item while
+            # TTS was working.
+            if zero_index >= len(self.show_plan) or self.show_plan[zero_index] is not item or item.text != original_text:
+                raise ValueError("Текст изменился во время озвучки; повторите переозвучивание.")
+            item.text = clean_text
+            item.path = mp3
+            item.duration_sec = max(0.0, duration)
+            self._show_plan_stale_audio_ids.discard(id(item))
+            self.show_plan_status = "текст шоу-плана и озвучка обновлены"
+        self._save_current_show_plan()
+        return {"index": index, "text": clean_text, "audio_ready": True, "rerendered": True}
+
+    def mutate_show_plan_item(self, index: int, action: str, *, target_index: int = 0) -> Dict[str, Any]:
+        """Apply a safe structural edit to a future show-plan item."""
+        action = str(action or "").strip().lower()
+        if action not in {"duplicate", "insert_after", "delete", "move"}:
+            raise ValueError("Неизвестное действие с элементом шоу-плана.")
+        zero_index = index - 1
+        with self.plan_lock:
+            if zero_index < 0 or zero_index >= len(self.show_plan):
+                raise ValueError("Элемент шоу-плана не найден.")
+            if zero_index <= self.show_plan_active_index or zero_index < self.show_plan_index:
+                raise ValueError("Нельзя менять уже идущий или завершённый элемент эфира.")
+            item = self.show_plan[zero_index]
+
+            if action == "delete":
+                removed = self.show_plan.pop(zero_index)
+                self._show_plan_stale_audio_ids.discard(id(removed))
+                selected_index = min(index, len(self.show_plan))
+            elif action == "move":
+                target_zero = target_index - 1
+                if target_zero < self.show_plan_index or target_zero >= len(self.show_plan):
+                    raise ValueError("Переместить блок можно только в будущую часть плана.")
+                moved = self.show_plan.pop(zero_index)
+                self.show_plan.insert(target_zero, moved)
+                selected_index = target_zero + 1
+            else:
+                if action == "insert_after":
+                    source = item if item.kind == "speech" else next(
+                        (candidate for candidate in self.show_plan if candidate.kind == "speech"),
+                        None,
+                    )
+                    if source is None:
+                        raise ValueError("В плане нет речевого блока, из которого можно создать черновик.")
+                    clone = PlannedItem(
+                        kind="speech",
+                        path=source.path,
+                        title="Новая реплика ведущего",
+                        text="Введите текст новой реплики.",
+                        duration_sec=source.duration_sec,
+                    )
+                    self._show_plan_stale_audio_ids.add(id(clone))
+                else:
+                    clone = PlannedItem(
+                        kind=item.kind,
+                        path=item.path,
+                        title=item.title,
+                        text=item.text,
+                        duration_sec=item.duration_sec,
+                        history_keys=list(item.history_keys),
+                        news_items=[dict(news) for news in item.news_items],
+                    )
+                    if id(item) in self._show_plan_stale_audio_ids:
+                        self._show_plan_stale_audio_ids.add(id(clone))
+                self.show_plan.insert(zero_index + 1, clone)
+                selected_index = index + 1
+
+            self.show_plan_status = "шоу-план обновлён"
+            count = len(self.show_plan)
+        self._save_current_show_plan()
+        return {"action": action, "selected_index": selected_index, "count": count}
+
+    def _build_preplanned_show(self, generation: Optional[int] = None) -> List[PlannedItem]:
+        """Serialize expensive plan rendering; stale jobs must not publish output."""
+        with self.plan_build_lock:
+            if generation is not None:
+                with self.plan_lock:
+                    if generation != self._plan_generation:
+                        return []
+            return self._build_preplanned_show_locked(generation)
+
+    def _build_preplanned_show_locked(self, generation: Optional[int] = None) -> List[PlannedItem]:
         """Builds and pre-renders a realistic radio show for a target duration.
 
         This mode intentionally waits for LM+TTS before music starts: the user can
@@ -1794,6 +2394,10 @@ class RadioEngine:
         total_music = 0.0
         guard = 0
         while total_music < target_sec and guard < max(10, len(self.tracks) * 8):
+            if generation is not None:
+                with self.plan_lock:
+                    if generation != self._plan_generation:
+                        return []
             self.show_plan_progress = {"current": int(min(total_music, target_sec)), "total": int(target_sec), "percent": int(min(35, (total_music / max(1.0, target_sec)) * 35)), "detail": f"музыкальная сетка: {len(selected)} треков, {total_music/60:.1f}/{target_sec/60:.0f} мин"}
             guard += 1
             tr = self.pop_next_track()
@@ -1827,6 +2431,10 @@ class RadioEngine:
 
         def add_speech(prev_track: Optional[Track], next_track: Optional[Track], intro: bool, reason: str, elapsed: float) -> None:
             nonlocal planned_elapsed, planned_speech_blocks
+            if generation is not None:
+                with self.plan_lock:
+                    if generation != self._plan_generation:
+                        return
             self.show_plan_status = f"генерирую и озвучиваю блок ведущих: {reason}"
             self.show_plan_progress = {"current": int(min(planned_elapsed, target_sec)), "total": int(target_sec), "percent": int(35 + min(55, (planned_elapsed / max(1.0, target_sec)) * 55)), "detail": self.show_plan_status}
             length = "intro_long" if (intro and self.cfg.get("show_plan_intro_long_opening", True)) else ("medium" if intro else ("long" if random.random() < float(self.cfg.get("show_plan_long_block_chance", 0.24) or 0.24) else random.choice(["short", "medium", "medium"])))
@@ -1838,14 +2446,12 @@ class RadioEngine:
                     greeting = read_greeting_line_unique(self.cfg, used_greetings)
                 else:
                     greeting = read_greeting_line(self.cfg)
-            news = read_news_line(self.cfg) if self.cfg.get("news_enabled", True) and random.random() < float(self.cfg.get("news_chance", 0.35) or 0.35) else ""
             weather = self.weather.get_weather_text() if self.cfg.get("weather_enabled", False) and random.random() < float(self.cfg.get("weather_context_chance", 0.25) or 0.25) else ""
             overrides = {
                 "time_text": ttext,
                 "spoken_time_text": spoken_ttext,
                 "exact_time_text": exact,
                 "greeting_text": greeting,
-                "news_text": news,
                 "weather_text": weather,
                 "dj_length": length,
                 "dj_instruction": instruction,
@@ -1859,11 +2465,19 @@ class RadioEngine:
             if not seg:
                 return
             dur = ffprobe_duration(self.cfg, seg.mp3) or 25.0
-            items.append(PlannedItem(kind="speech", path=seg.mp3, title="Ведущие в эфире", text=seg.text, duration_sec=float(dur)))
+            items.append(PlannedItem(
+                kind="speech",
+                path=seg.mp3,
+                title="Ведущие в эфире",
+                text=seg.text,
+                duration_sec=float(dur),
+                history_keys=list(seg.history_keys),
+                news_items=[dict(item) for item in seg.news_items],
+            ))
             planned_elapsed += float(dur)
             planned_speech_blocks += 1
-            # Remember generated text while planning to reduce repetition in later planned blocks.
-            self._record_host_text_as_aired(seg.text)
+            # A rendered plan is scheduled material, not an aired broadcast.  In
+            # particular it must not leak into listener-facing history/state.
 
         if bool(self.cfg.get("show_plan_include_intro", True)):
             add_speech(None, selected[0][0], True, "открытие заранее подготовленного эфира и мягкая подводка к первому треку", planned_elapsed)
@@ -1882,9 +2496,17 @@ class RadioEngine:
                 since_speech = 0
                 gap = random.randint(min_gap, max_gap)
 
+        if generation is not None:
+            with self.plan_lock:
+                if generation != self._plan_generation:
+                    self._release_content_reservations(
+                        history_keys=[key for item in items for key in item.history_keys],
+                        news_items=[news for item in items for news in item.news_items],
+                        mode="plan_generation_cancelled",
+                    )
+                    return []
         self.show_plan_last_generation_sec = max(0.0, time.time() - generation_started_ts)
         meta = {
-            "created_ts": int(time.time()),
             "target_minutes": float(self.cfg.get("show_plan_duration_minutes", 15) or 15),
             "estimated_seconds": planned_elapsed,
             "generation_seconds": self.show_plan_last_generation_sec,
@@ -1892,13 +2514,18 @@ class RadioEngine:
                 {"title": tr.display_name, "path": str(tr.path), "duration_sec": dur}
                 for tr, dur in selected
             ],
-            "items": [
-                {"kind": it.kind, "path": str(it.path), "title": it.title, "text": it.text, "duration_sec": it.duration_sec}
-                for it in items
-            ],
         }
+        if generation is not None:
+            with self.plan_lock:
+                if generation != self._plan_generation:
+                    self._release_content_reservations(
+                        history_keys=[key for item in items for key in item.history_keys],
+                        news_items=[news for item in items for news in item.news_items],
+                        mode="plan_generation_cancelled",
+                    )
+                    return []
         try:
-            save_json(self._plan_output_path(), meta)
+            self.show_plan_store.save(items, next_index=0, metadata=meta)
         except Exception as e:
             log(f"Не удалось сохранить план эфира: {e}")
         self.show_plan_status = f"программа готова: {len(items)} элементов, {planned_elapsed/60:.1f} мин; генерация заняла {self.show_plan_last_generation_sec/60:.1f} мин"
@@ -1914,12 +2541,15 @@ class RadioEngine:
                 return
             if self.plan_prepare_thread and self.plan_prepare_thread.is_alive():
                 return
+            generation = self._plan_generation
             def worker() -> None:
                 try:
                     self.show_plan_status = "заранее готовлю следующий блок планового эфира..."
                     log(self.show_plan_status)
-                    items = self._build_preplanned_show()
+                    items = self._build_preplanned_show(generation)
                     with self.plan_lock:
+                        if generation != self._plan_generation:
+                            return
                         self.next_show_plan = items
                     if items:
                         self.show_plan_status = f"следующий блок готов: {len(items)} элементов"
@@ -1999,24 +2629,41 @@ class RadioEngine:
         self.track_profile_thread.start()
         return True
 
-    def start_show_plan_generation(self, duration_minutes: Optional[int] = None) -> bool:
+    def start_show_plan_generation(self, duration_minutes: Optional[int] = None, *, preserve_planned_mode: bool = False) -> bool:
         with self.plan_lock:
             if self.plan_prepare_thread and self.plan_prepare_thread.is_alive():
                 return False
+            self._plan_generation += 1
+            generation = self._plan_generation
+            self._plan_cancel_requested_generation = None
         if duration_minutes:
             self.cfg["show_plan_duration_minutes"] = int(duration_minutes)
-        self.cfg["show_plan_enabled"] = True
+        # Generation itself must not switch the running radio into planned mode.
+        # The worker below does so only after a complete, playable plan exists.
+        if not preserve_planned_mode:
+            self.cfg["show_plan_enabled"] = False
         self.cfg["show_plan_rebuild_on_start"] = False
         save_json(CONFIG_PATH, self.cfg)
         def worker() -> None:
             try:
-                items = self._build_preplanned_show()
+                items = self._build_preplanned_show(generation)
                 with self.plan_lock:
+                    if generation != self._plan_generation:
+                        return
                     self.show_plan = items
                     self.show_plan_index = 0
+                    self.show_plan_active_index = -1
+                    self._show_plan_stale_audio_ids.clear()
                     self.next_show_plan = []
+                self._save_current_show_plan()
                 if items:
-                    self.show_plan_status = f"подготовленный эфир готов: {len(items)} элементов"
+                    auto_enable = bool(self.cfg.get("show_plan_auto_enable_after_generation", True))
+                    self.cfg["show_plan_enabled"] = auto_enable
+                    save_json(CONFIG_PATH, self.cfg)
+                    self.show_plan_status = (
+                        f"подготовленный эфир готов и включён: {len(items)} элементов"
+                        if auto_enable else f"подготовленный эфир готов: {len(items)} элементов; включите плановый режим вручную"
+                    )
                     self.show_plan_progress = {"current": len(items), "total": len(items), "percent": 100, "detail": self.show_plan_status}
                 else:
                     self.show_plan_status = "подготовленный эфир не удалось собрать"
@@ -2024,31 +2671,95 @@ class RadioEngine:
             except Exception as e:
                 self.show_plan_status = f"ошибка подготовки эфира: {e}"
                 log(self.show_plan_status)
+            finally:
+                with self.plan_lock:
+                    if self._plan_cancel_requested_generation == generation:
+                        self._plan_cancel_requested_generation = None
+                        self.show_plan_status = "подготовка плана отменена"
+                        self.show_plan_progress = {
+                            "current": 0,
+                            "total": 0,
+                            "percent": 0,
+                            "detail": "отменено пользователем",
+                        }
         with self.plan_lock:
             self.plan_prepare_thread = threading.Thread(target=worker, name="GenerateShowPlan", daemon=True)
             self.plan_prepare_thread.start()
         return True
 
+    def cancel_show_plan_generation(self) -> bool:
+        """Cancel publication of the active plan build and ask its loops to stop."""
+        with self.plan_lock:
+            if not self.plan_prepare_thread or not self.plan_prepare_thread.is_alive():
+                return False
+            cancelled_generation = self._plan_generation
+            self._plan_cancel_requested_generation = cancelled_generation
+            self._plan_generation += 1
+            self.show_plan_status = "отменяю подготовку плана…"
+            progress = dict(self.show_plan_progress)
+            progress["detail"] = "останавливаю текущую генерацию"
+            self.show_plan_progress = progress
+        return True
+
     def _air_preplanned_show(self) -> None:
-        if not self.show_plan or bool(self.cfg.get("show_plan_rebuild_on_start", True)):
-            self.show_plan = self._build_preplanned_show()
-            self.show_plan_index = 0
-            self.cfg["show_plan_rebuild_on_start"] = False
-        if not self.show_plan:
-            self._broadcast_silence(3)
+        with self.plan_lock:
+            should_build = not self.show_plan or bool(self.cfg.get("show_plan_rebuild_on_start", True))
+            builder_alive = bool(self.plan_prepare_thread and self.plan_prepare_thread.is_alive())
+        if should_build and not builder_alive:
+            self.start_show_plan_generation(
+                None, preserve_planned_mode=bool(self.cfg.get("show_plan_block_until_ready", True))
+            )
+        with self.plan_lock:
+            has_plan = bool(self.show_plan)
+        if not has_plan:
+            if self.cfg.get("show_plan_block_until_ready", True):
+                with self.plan_lock:
+                    self.show_plan_status = "плановый эфир ждёт полной готовности программы"
+                self._broadcast_silence(1)
+            else:
+                # This is a recovery path for an explicitly enabled but absent
+                # legacy plan.  Normal generation never enters planned mode.
+                self.cfg["show_plan_enabled"] = False
+                save_json(CONFIG_PATH, self.cfg)
+                with self.plan_lock:
+                    self.show_plan_status = "готовлю план в фоне; пока продолжается live-эфир"
             return
-        while not self.stop_event.is_set() and self.show_plan_index < len(self.show_plan):
+        while not self.stop_event.is_set():
             if not bool(self.cfg.get("show_plan_enabled", False)):
-                self.show_plan_status = "плановый эфир остановлен: включён live-режим"
+                with self.plan_lock:
+                    self.show_plan_status = "плановый эфир остановлен: включён live-режим"
                 return
-            item = self.show_plan[self.show_plan_index]
-            self.show_plan_index += 1
-            total_plan_items = max(1, len(self.show_plan))
-            remaining_items = max(0, len(self.show_plan) - self.show_plan_index)
-            remaining_sec = sum(float(x.duration_sec or 0.0) for x in self.show_plan[self.show_plan_index:])
+            # Defaults are only for static analysis; the values are replaced
+            # atomically together with a non-stale item below.
+            active_index = 0
+            total_plan_items = 1
+            remaining_items = 0
+            remaining_sec = 0.0
+            with self.plan_lock:
+                if self.show_plan_index >= len(self.show_plan):
+                    break
+                item_index = self.show_plan_index
+                item = self.show_plan[item_index]
+                if item.kind == "speech" and not self._show_plan_audio_is_current(item):
+                    self.show_plan_status = "план остановлен на изменённом тексте: переозвучьте речевой блок"
+                    item = None
+                if item is None:
+                    # Keep the index in place: a stale MP3 must never be aired
+                    # with edited text, and the user can safely rerender it.
+                    pass
+                else:
+                    self.show_plan_active_index = item_index
+                    self.show_plan_index += 1
+                    active_index = self.show_plan_index
+                    total_plan_items = max(1, len(self.show_plan))
+                    remaining_items = max(0, len(self.show_plan) - self.show_plan_index)
+                    remaining_sec = sum(float(x.duration_sec or 0.0) for x in self.show_plan[self.show_plan_index:])
+            if item is None:
+                self._broadcast_silence(0.5)
+                continue
             gen_margin_min = max(float(self.cfg.get("show_plan_prepare_next_threshold_minutes", 4) or 4), (float(self.show_plan_last_generation_sec or 0.0) / 60.0) + 1.0)
             fraction_threshold = clamp(float(self.cfg.get("show_plan_prepare_next_fraction", 0.50) or 0.50), 0.10, 0.90)
-            progress_fraction = self.show_plan_index / total_plan_items
+            progress_fraction = active_index / total_plan_items
             need_next_by_items = remaining_items <= int(self.cfg.get("show_plan_prepare_next_threshold_items", 3) or 3)
             need_next_by_time = remaining_sec <= gen_margin_min * 60.0
             need_next_by_fraction = progress_fraction >= fraction_threshold
@@ -2057,50 +2768,88 @@ class RadioEngine:
                 log(f"Плановый эфир: запускаю подготовку следующего плана заранее ({reason}); прогресс {progress_fraction:.0%}, осталось {remaining_sec/60:.1f} мин")
                 self._start_prepare_next_show_plan()
             if item.kind == "speech":
-                self._record_host_text_as_aired(item.text)
                 self.set_now(item.title or "Ведущие", "speech")
-                log(f"Плановый эфир: ведущие ({self.show_plan_index}/{len(self.show_plan)})")
-                ok = self._stream_path_to_broadcast(item.path, "speech")
+                log(f"Плановый эфир: ведущие ({active_index}/{total_plan_items})")
+                transition = self.pending_music_speech_transition
+                self.pending_music_speech_transition = None
+                if transition and transition[1].resolve() == item.path.resolve():
+                    ok = self._stream_music_speech_crossfade(*transition)
+                    if not ok and not self.stop_event.is_set() and not self.skip_event.is_set():
+                        ok = self._stream_path_to_broadcast(item.path, "speech")
+                else:
+                    ok = self._stream_path_to_broadcast(item.path, "speech")
                 if ok:
+                    self._record_host_text_as_aired(item.text)
+                    self._mark_content_aired(item.history_keys, item.news_items, mode="planned")
                     with self.state_lock:
                         self.speech_blocks_played += 1
                     self._stream_jingle_after_speech()
+                else:
+                    self._release_content_reservations(
+                        history_keys=item.history_keys,
+                        news_items=item.news_items,
+                        mode="planned_stream_failed",
+                    )
                 self._transition_pause()
             else:
                 self.set_now(item.title, "music")
                 log(f"Плановый эфир: играет {item.title}")
                 # If the next planned item is speech, catch the tail of the song.
-                next_is_speech = self.show_plan_index < len(self.show_plan) and self.show_plan[self.show_plan_index].kind == "speech"
+                with self.plan_lock:
+                    next_is_speech = self.show_plan_index < len(self.show_plan) and self.show_plan[self.show_plan_index].kind == "speech"
+                    next_speech = self.show_plan[self.show_plan_index] if next_is_speech else None
                 limit_sec = None
                 if next_is_speech and self.cfg.get("speech_takeover_enabled", True):
                     takeover = max(0.0, float(self.cfg.get("speech_takeover_sec", 1.15) or 1.15))
                     if item.duration_sec > takeover + 45:
                         limit_sec = max(1.0, item.duration_sec - takeover)
+                        if next_speech and self.cfg.get("speech_takeover_crossfade_enabled", True):
+                            self.pending_music_speech_transition = (
+                                item.path,
+                                next_speech.path,
+                                float(item.duration_sec),
+                                takeover,
+                            )
                         log(f"Плановый segue: перехватываю хвост трека на {takeover:.1f} сек., чтобы ведущие вошли без тишины")
-                self._stream_path_plain_to_broadcast(item.path, "music", limit_sec=limit_sec)
+                music_ok = self._stream_path_plain_to_broadcast(item.path, "music", limit_sec=limit_sec)
+                if not music_ok:
+                    self.pending_music_speech_transition = None
                 with self.state_lock:
                     self.tracks_played += 1
                 self._transition_pause()
-        if self.show_plan_index >= len(self.show_plan):
+            with self.plan_lock:
+                if self.show_plan_active_index == item_index:
+                    self.show_plan_active_index = -1
+            self._save_current_show_plan()
+        with self.plan_lock:
+            plan_finished = self.show_plan_index >= len(self.show_plan)
+        if plan_finished:
             with self.plan_lock:
                 if self.next_show_plan:
                     self.show_plan = self.next_show_plan
                     self.next_show_plan = []
                     self.show_plan_index = 0
+                    self.show_plan_active_index = -1
                     self.show_plan_status = f"перешёл на следующий подготовленный блок: {len(self.show_plan)} элементов"
+                    self._save_current_show_plan()
                     return
             if self.cfg.get("show_plan_continuous_extend", True):
-                self.show_plan_status = "программа закончилась; следующий блок ещё готовится — держу эфир случайной музыкой"
+                with self.plan_lock:
+                    self.show_plan_status = "программа закончилась; следующий блок ещё готовится — держу эфир случайной музыкой"
                 log(self.show_plan_status)
                 self._start_prepare_next_show_plan()
-                self.show_plan = []
-                self.show_plan_index = 0
+                with self.plan_lock:
+                    self.show_plan = []
+                    self.show_plan_index = 0
+                self._save_current_show_plan()
                 if self.cfg.get("show_plan_fill_music_while_generating", True):
                     self._air_filler_music_until_next_plan()
             else:
-                self.show_plan_status = "плановый эфир закончился"
-                self.show_plan = []
-                self.show_plan_index = 0
+                with self.plan_lock:
+                    self.show_plan_status = "плановый эфир закончился"
+                    self.show_plan = []
+                    self.show_plan_index = 0
+                self._save_current_show_plan()
                 if self.cfg.get("show_plan_live_after_exhausted", True):
                     self.cfg["show_plan_enabled"] = False
 
@@ -2115,8 +2864,10 @@ class RadioEngine:
                     self.show_plan = self.next_show_plan
                     self.next_show_plan = []
                     self.show_plan_index = 0
+                    self.show_plan_active_index = -1
                     self.show_plan_status = f"следующий подготовленный блок принят в эфир: {len(self.show_plan)} элементов"
                     log(self.show_plan_status)
+                    self._save_current_show_plan()
                     return
                 still_generating = bool(self.plan_prepare_thread and self.plan_prepare_thread.is_alive())
             if not still_generating:
@@ -2141,6 +2892,23 @@ class RadioEngine:
             self._transition_pause()
 
     def _broadcast_loop(self) -> None:
+        """Always unblock stream subscribers, even after an unexpected runtime error."""
+        try:
+            self._broadcast_loop_impl()
+        except Exception as e:
+            self.set_error(f"Ошибка радио-эфира: {e}")
+            log(f"Фоновый радио-эфир остановлен из-за ошибки: {e}")
+        finally:
+            self.stop_event.set()
+            self._broadcast(None)
+            with self.state_lock:
+                if self.current_kind != "stopped":
+                    self.current_kind = "stopped"
+                    self.now_playing = "Радио остановлено"
+                    self.current_started_ts = time.time()
+            log("Фоновый радио-эфир остановлен")
+
+    def _broadcast_loop_impl(self) -> None:
         log("Фоновый радио-эфир запущен. Он идёт даже без слушателей.")
         while not self.stop_event.is_set():
             self.skip_event.clear()
@@ -2229,13 +2997,12 @@ class RadioEngine:
                 if self.skip_event.is_set():
                     self.skip_event.clear()
                     self._transition_pause()
-        self._broadcast(None)
-        log("Фоновый радио-эфир остановлен")
 
     def update_config(self, updates: Dict[str, Any]) -> None:
         before_cfg = dict(self.cfg)
-        self.cfg.update(updates)
-        self.cfg = normalize_config(self.cfg)
+        merged_cfg = dict(self.cfg)
+        merged_cfg.update(updates)
+        self.cfg = normalize_config(merged_cfg)
         save_json(CONFIG_PATH, self.cfg)
         changed_keys = {k for k in updates.keys() if before_cfg.get(k) != self.cfg.get(k)}
         # Клиенты зависят от актуального cfg; пересоздаём helper'ы.
@@ -2256,35 +3023,61 @@ class RadioEngine:
             except Exception:
                 pass
             self.tts = TTS(self.cfg)
+            with self.tts_service_lock:
+                self.tts_service_status = "not_initialized"
+                self.tts_service_error = ""
         else:
             self.tts.cfg = self.cfg
         self.weather = WeatherClient(self.cfg)
         self.next_dj_after = self._random_dj_gap()
         with self.prepare_lock:
+            stale_prepared = self.prepared_dj
             self.prepared_dj = None
             self.prepared_status = "готовая live-вставка сброшена после изменения настроек"
+        if stale_prepared:
+            self._release_content_reservations(
+                history_keys=stale_prepared.history_keys,
+                news_items=stale_prepared.news_items,
+                mode="settings_changed",
+            )
         plan_affecting = {
-            "strict_duo_intro_retry_attempts", "show_plan_duration_minutes", "show_plan_min_tracks_between_speech", "show_plan_max_tracks_between_speech",
+            "strict_duo_intro_require_both", "strict_duo_intro_retry_attempts", "show_plan_duration_minutes", "show_plan_min_tracks_between_speech", "show_plan_max_tracks_between_speech",
             "show_plan_long_block_chance", "show_plan_include_intro", "show_plan_intro_long_opening",
             "station_style", "host_mode", "host_solo_name", "track_profiles_enabled", "track_profiles_file",
-            "news_enabled", "weather_enabled", "listener_greetings_enabled", "lm_model", "lm_temperature", "lm_max_tokens",
+            "news_enabled", "news_agent_enabled", "news_agent_queries", "news_agent_official_domains",
+            "news_agent_factcheck_enabled", "weather_enabled", "listener_greetings_enabled", "lm_model", "lm_temperature", "lm_max_tokens",
             "tts_backend", "omnivoice_mode", "omnivoice_device", "omnivoice_python",
             "entertainment_model", "entertainment_agent_enabled", "entertainment_agent_results_per_query",
             "entertainment_agent_max_pages", "entertainment_agent_pages_per_topic",
             "entertainment_agent_min_page_chars", "entertainment_agent_page_chars",
             "entertainment_agent_total_evidence_chars", "entertainment_agent_factcheck_enabled",
-            "entertainment_daily_cache_dir", "entertainment_pack_max_items",
+            "entertainment_daily_cache_dir", "entertainment_pack_max_items", "entertainment_integration_mode",
+            "riddle_options_count", "guest_enabled", "guest_in_planned", "guest_generate_before_radio",
         }
         if any(k in changed_keys for k in plan_affecting):
-            self.show_plan = []
-            self.show_plan_index = 0
-            self.next_show_plan = []
-            self.show_plan_status = "план сброшен: изменились параметры, влияющие на программу"
+            self.clear_show_plan(reason="план сброшен: изменились параметры, влияющие на программу")
             self.entertainment_pack = {}
             self.entertainment_pack_date = ""
+            with self.news_lock:
+                self.news_pack = {}
+        # A generated live insert contains old prompts/voices after any save;
+        # discard it rather than allowing a stale background thread to publish.
+        with self.prepare_lock:
+            self._prepare_generation += 1
         self.set_error("")
 
     def status_snapshot(self) -> Dict[str, Any]:
+        with self.plan_lock:
+            plan_status = self.show_plan_status
+            plan_index = self.show_plan_index
+            plan_active_index = self.show_plan_active_index
+            plan_items = list(self.show_plan)
+            stale_audio_ids = set(self._show_plan_stale_audio_ids)
+            next_plan_items = len(self.next_show_plan)
+            plan_generating = bool(self.plan_prepare_thread and self.plan_prepare_thread.is_alive())
+            plan_cancel_requested = getattr(self, "_plan_cancel_requested_generation", None) is not None
+            plan_progress = dict(self.show_plan_progress)
+            plan_generation_seconds = self.show_plan_last_generation_sec
         with self.state_lock:
             snap = {
                 "app_version": APP_VERSION,
@@ -2301,13 +3094,17 @@ class RadioEngine:
                 "skip_requested_by": self.skip_requested_by,
                 "played_since_dj": self.played_since_dj,
                 "next_dj_after": self.next_dj_after,
-                "show_plan_status": self.show_plan_status,
+                "show_plan_status": plan_status,
                 "show_plan_enabled": bool(self.cfg.get("show_plan_enabled", False)),
                 "air_mode": "Плановый" if bool(self.cfg.get("show_plan_enabled", False)) else "Live",
-                "show_plan_index": self.show_plan_index,
-                "show_plan_items": len(self.show_plan),
-                "show_plan_next_items": len(self.next_show_plan),
-                "show_plan_generating": bool(self.plan_prepare_thread and self.plan_prepare_thread.is_alive()),
+                # Public indices are one-based and describe the currently
+                # audible item.  The internal cursor remains the next item.
+                "show_plan_index": plan_active_index + 1 if plan_active_index >= 0 else 0,
+                "show_plan_next_index": plan_index + 1 if plan_index < len(plan_items) else 0,
+                "show_plan_items": len(plan_items),
+                "show_plan_next_items": next_plan_items,
+                "show_plan_generating": plan_generating,
+                "show_plan_cancel_requested": plan_cancel_requested,
                 "track_profile_status": self.track_profile_status,
                 "track_profile_building": bool(self.track_profile_thread and self.track_profile_thread.is_alive()),
                 "track_profile_count": len(self.track_profiles),
@@ -2317,22 +3114,53 @@ class RadioEngine:
                 "horoscope_index": self.horoscope_index,
                 "pending_riddle": bool(self.pending_riddle),
                 "track_profile_progress": dict(self.track_profile_progress),
-                "show_plan_progress": dict(self.show_plan_progress),
-                "show_plan_last_generation_sec": self.show_plan_last_generation_sec,
-                "show_plan_preview": [
-                    {
-                        "idx": i + 1,
-                        "kind": it.kind,
-                        "title": it.title,
-                        "duration_sec": round(float(it.duration_sec or 0.0), 1),
-                        "text": (it.text or "")[:220],
-                        "active": i == self.show_plan_index,
-                    }
-                    for i, it in enumerate(self.show_plan[:int(self.cfg.get("show_plan_preview_items", 80) or 80)])
-                ],
+                "show_plan_progress": plan_progress,
+                "show_plan_last_generation_sec": plan_generation_seconds,
+                "show_plan_preview": self._show_plan_preview(
+                    plan_items, plan_active_index, stale_audio_ids
+                ),
                 "radio_running": self.is_running(),
                 "radio_starting": self.is_starting(),
             }
+        with self.news_lock:
+            raw_news_pack = dict(self.news_pack)
+            news_status = self.news_status
+        source_urls: Dict[int, str] = {}
+        for source in raw_news_pack.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            raw_source_id = str(source.get("source_id") or "")
+            if raw_source_id.isdigit():
+                source_urls[int(raw_source_id)] = str(source.get("url") or "")
+
+        def iso_timestamp(value: Any) -> str:
+            if isinstance(value, (int, float)) and value > 0:
+                return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+            return str(value or "")
+
+        public_news_items = []
+        for raw_item in raw_news_pack.get("items") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            item = {
+                key: raw_item.get(key)
+                for key in ("draft_id", "title", "summary", "status", "status_reason", "published_at")
+            }
+            item["expires_at"] = iso_timestamp(raw_item.get("expires_at"))
+            item["source_urls"] = [
+                source_urls[source_id]
+                for source_id in raw_item.get("source_ids") or []
+                if source_id in source_urls and source_urls[source_id]
+            ]
+            public_news_items.append(item)
+        snap["news_status"] = news_status
+        snap["news_pack"] = {
+            "created_at": iso_timestamp(raw_news_pack.get("created_at")),
+            "expires_at": iso_timestamp(raw_news_pack.get("expires_at")),
+            "fallback_used": bool(raw_news_pack.get("fallback_used")),
+            "fallback_reason": str(raw_news_pack.get("fallback_reason") or ""),
+            "items": public_news_items,
+        }
         with self.prepare_lock:
             snap["prepared_status"] = self.prepared_status
             snap["prepared_ready"] = bool(self.prepared_dj)
@@ -2351,9 +3179,132 @@ class RadioEngine:
             "host_mode": str(self.cfg.get("host_mode", "mostly_solo")),
             "fade_enabled": bool(self.cfg.get("fade_enabled", True)),
             "speech_bed_enabled": bool(self.cfg.get("speech_bed_enabled", True)),
+            **self._tts_runtime_status(),
             "hotkey_enabled": bool(self.cfg.get("hotkey_enabled", True)),
             "night_now": is_night_now(self.cfg),
             "time_text": current_time_text(),
         })
         return snap
+
+    def _tts_runtime_status(self) -> Dict[str, Any]:
+        """Small machine-readable readiness signal; never expose voice details."""
+        backend = str(self.cfg.get("tts_backend") or "").strip().lower()
+        if backend in {"", "none", "off", "disabled"}:
+            return {"tts_backend": backend or "none", "tts_ready": False, "tts_status": "disabled"}
+        worker_attr = None
+        persistent = False
+        if backend in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"}:
+            worker_attr = "omnivoice_worker"
+            persistent = bool(self.cfg.get("omnivoice_persistent_worker", True))
+        elif backend in {"qwen3", "qwen3_tts", "qwen"}:
+            worker_attr = "qwen3_worker"
+            persistent = bool(self.cfg.get("qwen3_tts_persistent_worker", True))
+        if not persistent:
+            return {"tts_backend": backend, "tts_ready": True, "tts_status": "on_demand"}
+        worker = getattr(self.tts, worker_attr, None) if worker_attr else None
+        proc = getattr(worker, "proc", None) if worker is not None else None
+        if proc is not None and proc.poll() is None:
+            return {"tts_backend": backend, "tts_ready": True, "tts_status": "ready"}
+        service_lock = getattr(self, "tts_service_lock", None)
+        if service_lock is None:
+            service_status = "not_initialized"
+            service_error = ""
+        else:
+            with service_lock:
+                service_status = getattr(self, "tts_service_status", "not_initialized")
+                service_error = getattr(self, "tts_service_error", "")
+        if service_status in {"starting", "stopping", "stopped", "error"}:
+            return {
+                "tts_backend": backend,
+                "tts_ready": False,
+                "tts_status": service_status,
+                "tts_error": service_error,
+            }
+        result = {"tts_backend": backend, "tts_ready": False, "tts_status": "not_initialized" if worker is None else "unavailable"}
+        if service_error:
+            result["tts_error"] = service_error
+        return result
+
+    def start_omnivoice_service_async(self) -> tuple[bool, str]:
+        """Start the persistent OmniVoice worker without starting the radio."""
+        backend = str(self.cfg.get("tts_backend") or "").strip().lower()
+        if backend not in {"omnivoice", "omnivoice_tts", "omni", "omni_voice"}:
+            return False, "Сначала выберите OmniVoice как движок озвучки и сохраните настройки."
+        if not bool(self.cfg.get("omnivoice_persistent_worker", True)):
+            return False, "Включите «Держать OmniVoice в фоне» и сохраните настройки."
+        with self.tts_service_lock:
+            if self.tts_service_thread and self.tts_service_thread.is_alive():
+                return False, "OmniVoice уже запускается."
+            runtime = self._tts_runtime_status()
+            if runtime.get("tts_ready"):
+                self.tts_service_status = "ready"
+                return False, "OmniVoice уже запущен."
+            self.tts_service_status = "starting"
+            self.tts_service_error = ""
+
+            def run() -> None:
+                ok = False
+                error = ""
+                try:
+                    ok = bool(self.tts.start_omnivoice_worker(self.cfg.get("hosts") or []))
+                    if not ok:
+                        error = "OmniVoice не загрузился. Проверьте окружение, путь к Python и журнал приложения."
+                except Exception as exc:
+                    error = str(exc)
+                    log(f"OmniVoice panel start failed: {exc}")
+                with self.tts_service_lock:
+                    if self.tts_service_status != "stopping":
+                        self.tts_service_status = "ready" if ok else "error"
+                        self.tts_service_error = "" if ok else error
+
+            self.tts_service_thread = threading.Thread(target=run, name="omnivoice-panel-start", daemon=True)
+            self.tts_service_thread.start()
+        return True, "OmniVoice загружается в фоне."
+
+    def stop_omnivoice_service(self) -> tuple[bool, str]:
+        """Stop/cancel OmniVoice while leaving the radio process itself intact."""
+        with self.tts_service_lock:
+            self.tts_service_status = "stopping"
+            self.tts_service_error = ""
+            worker = self.tts.omnivoice_worker
+            if worker is not None:
+                worker.stop_requested.set()
+        stopped = self.tts.stop_omnivoice_worker()
+        with self.tts_service_lock:
+            self.tts_service_status = "stopped"
+            self.tts_service_error = ""
+        return stopped, "OmniVoice остановлен." if stopped else "OmniVoice уже был остановлен."
+
+    def _show_plan_preview(
+        self, items: List[PlannedItem], active_index: int, stale_audio_ids: set[int]
+    ) -> List[Dict[str, Any]]:
+        """Return complete scripts while bounding the status response globally."""
+        item_limit = max(1, int(self.cfg.get("show_plan_preview_items", 80) or 80))
+        char_limit = max(4_000, int(self.cfg.get("show_plan_preview_max_chars", 120_000) or 120_000))
+        result: List[Dict[str, Any]] = []
+        used_chars = 0
+        for i, item in enumerate(items[:item_limit]):
+            text = item.text or ""
+            hosts: List[str] = []
+            if item.kind == "speech":
+                for host, _spoken in parse_dialogue_segments(text, self.cfg.get("hosts") or []):
+                    clean_host = str(host or "").strip()
+                    if clean_host and clean_host not in hosts:
+                        hosts.append(clean_host)
+            # Do not truncate an individual script: omit later preview entries
+            # instead, so an editor can never save a truncated text back.
+            if result and used_chars + len(text) > char_limit:
+                break
+            used_chars += len(text)
+            result.append({
+                "idx": i + 1,
+                "kind": item.kind,
+                "title": item.title,
+                "duration_sec": round(float(item.duration_sec or 0.0), 1),
+                "text": text,
+                "hosts": hosts,
+                "active": i == active_index,
+                "audio_ready": item.kind == "speech" and id(item) not in stale_audio_ids and item.path.is_file(),
+            })
+        return result
 

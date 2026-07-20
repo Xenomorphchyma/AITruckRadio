@@ -8,7 +8,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ai_truck_radio_app.config import (
     APP_NAME,
@@ -285,11 +285,16 @@ def style_prompt(style: str, night: bool) -> str:
     return base
 
 
+def should_include_news(cfg: Dict[str, Any], random_fn: Optional[Callable[[], float]] = None) -> bool:
+    """Make the single probability decision; the file reader never applies the chance again."""
+    if not cfg.get("news_enabled", True):
+        return False
+    chance = max(0.0, min(1.0, float(cfg.get("news_chance", 0.35) or 0.0)))
+    return (random_fn or random.random)() < chance
+
+
 def read_news_line(cfg: Dict[str, Any]) -> str:
     if not cfg.get("news_enabled", True):
-        return ""
-    chance = float(cfg.get("news_chance", 0.35))
-    if random.random() > chance:
         return ""
     path = Path(str(cfg.get("news_file", "data/news.txt")))
     if not path.is_absolute():

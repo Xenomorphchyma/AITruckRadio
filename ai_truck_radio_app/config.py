@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -16,6 +18,7 @@ APP_VERSION = "0.8.0-host-ui-time-rubric-fixes"
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = BASE_DIR / "config.json"
 MUSIC_EXTS = {".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma"}
+_JSON_WRITE_LOCK = threading.RLock()
 
 RUS_WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 RUS_MONTHS = [
@@ -52,6 +55,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "lm_max_tokens": 760,
     "lm_timeout_sec": 90,
     "lm_append_no_think": False,  # False = разрешаем Thinking в LM Studio, если он включён в модели
+    "lm_compact_host_prompt": True,
+    "lm_host_system_max_chars": 900,
+    "lm_host_prompt_max_chars": 4800,
+    "lm_host_max_tokens": 760,
 
     "tts_backend": "omnivoice",  # core: omnivoice | piper | sapi | none
     "show_experimental_tts_backends": False,
@@ -87,6 +94,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "omnivoice_ref_audio": "references/maxim_ref.wav",
     "omnivoice_ref_text": "",
     "omnivoice_instruct": "male, middle-aged, russian accent, low pitch",
+    "reference_asr_enabled": True,
+    "reference_asr_backend": "faster-whisper",
+    "reference_asr_level": "balanced",
+    "reference_asr_model": "Systran/faster-whisper-small",
+    "reference_asr_device": "cpu",
+    "reference_asr_compute_type": "int8",
+    "reference_asr_cache_dir": ".hf_cache/asr",
+    "reference_asr_language": "ru",
+    "reference_asr_beam_size": 5,
+    "reference_asr_review_enabled": True,
+    "reference_asr_review_model": "large-v3-turbo",
+    "reference_asr_review_device": "cpu",
+    "reference_asr_review_compute_type": "int8",
+    "reference_asr_review_consensus_similarity": 0.86,
+    "reference_asr_keep_model_loaded": False,
+    "reference_asr_profile_version": 3,
 
     "silero_repo_dir": "silero-models",  # папка с исходниками snakers4/silero-models; пусто = torch.hub попробует сам
     "silero_language": "ru",
@@ -188,6 +211,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "speech_takeover_sec": 4.0,
     "speech_takeover_min_track_sec": 45.0,
     "speech_takeover_only_if_prepared": True,
+    "speech_takeover_crossfade_enabled": True,
 
     "speech_bed_enabled": True,
     "speech_bed_dir": "beds",
@@ -360,6 +384,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "show_plan_include_intro": True,
     "show_plan_rebuild_on_start": False,
     "show_plan_output_file": "cache/show_plans/last_show_plan.json",
+    "show_plan_restore_on_start": True,
+    "show_plan_restore_max_age_hours": 168,
+    "show_plan_restore_max_items": 1000,
     "show_plan_min_tracks_between_speech": 1,
     "show_plan_max_tracks_between_speech": 3,
     "show_plan_long_block_chance": 0.24,
@@ -374,6 +401,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "show_plan_fill_music_while_generating": True,
     "show_plan_auto_enable_after_generation": True,
     "show_plan_preview_items": 80,
+    "show_plan_preview_max_chars": 120000,
 
     # Реалистичные эфирные якоря.
     "exact_hour_time_announce_enabled": True,
@@ -461,6 +489,31 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "news_file": "data/news.txt",
     "news_lines_per_insert": 1,
     "news_chance": 0.35,
+    "news_agent_enabled": True,
+    "news_agent_generate_before_radio": True,
+    "news_agent_model": "local-model",
+    "news_agent_queries": "главные новости России сегодня, мировые новости сегодня, наука и технологии сегодня",
+    "news_agent_official_domains": "tass.ru, ria.ru, government.ru, kremlin.ru",
+    "news_agent_results_per_query": 6,
+    "news_agent_max_pages": 8,
+    "news_agent_min_page_chars": 200,
+    "news_agent_page_chars": 7000,
+    "news_agent_total_evidence_chars": 20000,
+    "news_agent_page_timeout_sec": 15,
+    "news_agent_timeout_sec": 150,
+    "news_agent_max_tokens": 1800,
+    "news_agent_temperature": 0.15,
+    "news_agent_factcheck_enabled": True,
+    "news_agent_structured_output": True,
+    "news_agent_no_think": True,
+    "news_agent_min_independent_domains": 2,
+    "news_agent_max_items": 8,
+    "news_agent_source_ttl_sec": 21600,
+    "news_agent_cache_ttl_sec": 21600,
+    "news_agent_cache_file": "cache/news_agent/latest.json",
+    "news_agent_history_file": "cache/news_agent/history.json",
+    "news_agent_history_max_items": 1000,
+    "guest_allow_unverified_lm": False,
 
     "weather_enabled": False,
     "weather_city": "Moscow",
@@ -510,8 +563,25 @@ def deep_merge(defaults: Dict[str, Any], loaded: Dict[str, Any]) -> Dict[str, An
 
 
 def save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Atomically publish JSON so concurrent panel/runtime writes never tear it."""
+    path = Path(path)
+    encoded = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    with _JSON_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(encoded)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
 
 def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -742,6 +812,14 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("listener_greetings_file", "data/greetings.txt")
     cfg.setdefault("tts_parse_validation_enabled", True)
     cfg.setdefault("max_host_text_chars", 4000)
+    for _k in [
+        "reference_asr_enabled", "reference_asr_backend", "reference_asr_model",
+        "reference_asr_device", "reference_asr_compute_type", "reference_asr_cache_dir", "reference_asr_language",
+        "reference_asr_beam_size", "reference_asr_review_enabled", "reference_asr_review_model",
+        "reference_asr_review_device", "reference_asr_review_compute_type",
+        "reference_asr_review_consensus_similarity",
+    ]:
+        cfg.setdefault(_k, DEFAULT_CONFIG.get(_k))
 
     # Runtime migration v0.5.1: panel-first workflow + continuous planned chunks.
     try:
@@ -761,6 +839,7 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         cfg.setdefault("show_plan_fill_music_while_generating", True)
         cfg.setdefault("show_plan_auto_enable_after_generation", True)
         cfg.setdefault("show_plan_preview_items", 80)
+        cfg.setdefault("show_plan_preview_max_chars", 120000)
         cfg.setdefault("show_plan_rebuild_on_start", False)
         cfg.setdefault("show_plan_block_until_ready", True)
         cfg.setdefault("track_profiles_web_lookup_enabled", True)
@@ -797,6 +876,17 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("live_force_early_prepare_when_due", True)
     cfg.setdefault("avoid_road_cliche_prompt", True)
     cfg.setdefault("season_reality_guard_enabled", True)
+
+    # ``speech_bed_mode`` is the single runtime control.  Keep the old boolean
+    # as a derived mirror so older panels/configs cannot create contradictory
+    # states such as enabled=True + mode=off.
+    bed_mode = str(cfg.get("speech_bed_mode", "generated") or "generated").strip().lower()
+    if bed_mode not in {"generated", "file", "auto", "off"}:
+        bed_mode = "generated"
+    cfg["speech_bed_mode"] = bed_mode
+    cfg["speech_bed_enabled"] = bed_mode != "off"
+    mode = str(cfg.get("entertainment_integration_mode", "auto_mix") or "auto_mix").strip().lower()
+    cfg["entertainment_integration_mode"] = mode if mode in {"auto_mix", "separate", "combine"} else "auto_mix"
 
 
     # v0.5.6 safety: these defaults must appear even for existing configs that already passed older migrations.
@@ -843,6 +933,32 @@ def load_config() -> Dict[str, Any]:
         return dict(DEFAULT_CONFIG)
     try:
         loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        # v3 keeps the fast pass on CPU and adds an on-demand stronger reviewer.
+        # Explicit primary model/device choices remain under user control.
+        try:
+            asr_profile = int(loaded.get("reference_asr_profile_version", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            asr_profile = 0
+        if isinstance(loaded, dict) and asr_profile < 3:
+            if asr_profile < 2:
+                if str(loaded.get("reference_asr_model") or "") in {
+                    "",
+                    "Systran/faster-whisper-large-v3",
+                }:
+                    loaded["reference_asr_model"] = "Systran/faster-whisper-small"
+                if str(loaded.get("reference_asr_device") or "") in {"", "auto"}:
+                    loaded["reference_asr_device"] = "cpu"
+                if str(loaded.get("reference_asr_compute_type") or "") in {"", "auto"}:
+                    loaded["reference_asr_compute_type"] = "int8"
+            loaded.setdefault("reference_asr_review_enabled", True)
+            loaded.setdefault("reference_asr_review_model", "large-v3-turbo")
+            loaded.setdefault("reference_asr_review_device", "cpu")
+            loaded.setdefault("reference_asr_review_compute_type", "int8")
+            loaded.setdefault("reference_asr_review_consensus_similarity", 0.86)
+            loaded["reference_asr_keep_model_loaded"] = False
+            loaded["reference_asr_profile_version"] = 3
+        if str(loaded.get("reference_asr_review_model") or "") == "Systran/faster-whisper-large-v3-turbo":
+            loaded["reference_asr_review_model"] = "large-v3-turbo"
         cfg = normalize_config(deep_merge(DEFAULT_CONFIG, loaded))
         save_json(CONFIG_PATH, cfg)
         return cfg

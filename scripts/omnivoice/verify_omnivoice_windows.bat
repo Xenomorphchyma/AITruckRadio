@@ -13,4 +13,7 @@ if not exist ".venv_omnivoice\Scripts\python.exe" (
   exit /b 1
 )
 ".venv_omnivoice\Scripts\python.exe" tools\omnivoice_probe.py
+set "PROBE_EXIT=%ERRORLEVEL%"
+if not "%PROBE_EXIT%"=="0" echo [ERROR] OmniVoice verification failed with exit code %PROBE_EXIT%.
 pause
+exit /b %PROBE_EXIT%

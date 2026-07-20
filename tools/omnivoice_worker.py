@@ -74,6 +74,7 @@ def main() -> int:
             continue
         try:
             job = json.loads(raw)
+            job_id = str(job.get('job_id') or '')
             out = Path(str(job.get('out') or ''))
             text = str(job.get('text') or '').strip()
             if not text:
@@ -134,9 +135,9 @@ def main() -> int:
             audio = append_tail_silence(audio, sample_rate, int(job.get('tail_silence_ms') or 260))
             out.parent.mkdir(parents=True, exist_ok=True)
             sf.write(str(out), audio, sample_rate)
-            jprint({'ok': True, 'stage': 'render', 'out': str(out), 'bytes': out.stat().st_size, 'normalized_text': normalized_text})
+            jprint({'ok': True, 'stage': 'render', 'job_id': job_id, 'out': str(out), 'bytes': out.stat().st_size, 'normalized_text': normalized_text})
         except Exception as e:
-            jprint({'ok': False, 'stage': 'render', 'error': repr(e), 'traceback': traceback.format_exc()[-4000:]})
+            jprint({'ok': False, 'stage': 'render', 'job_id': locals().get('job_id', ''), 'error': repr(e), 'traceback': traceback.format_exc()[-4000:]})
 
     return 0
 

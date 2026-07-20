@@ -12,7 +12,15 @@ from ai_truck_radio_app.entertainment_agent import (
     _retain_factchecked_originals,
     _validate_pack,
 )
-from ai_truck_radio_app.entertainment_history import clear_history, filter_unused, mark_used, prompt_exclusions
+from ai_truck_radio_app.entertainment_history import (
+    clear_history,
+    filter_unused,
+    load_items,
+    mark_aired,
+    mark_used,
+    prompt_exclusions,
+    release_scheduled,
+)
 from ai_truck_radio_app.web_research import SearchParser
 
 
@@ -91,6 +99,25 @@ class EntertainmentAgentTests(unittest.TestCase):
         result = _validate_pack(data, fallback, 12, 1)
         self.assertEqual(result["wrong_games"], fallback["wrong_games"])
 
+    def test_guest_story_requires_source_and_rejects_high_risk_content(self) -> None:
+        data = {
+            "guest_stories": [
+                {
+                    "title": "Музыкальная мастерская",
+                    "text": "Участники небольшой мастерской собрали необычные инструменты из безопасных бытовых материалов и устроили открытый концерт.",
+                    "source_ids": [1],
+                },
+                {
+                    "title": "Совет по лекарствам",
+                    "text": "Гость рекомендует лекарства и обещает гарантированный результат без консультации специалиста.",
+                    "source_ids": [1],
+                },
+            ]
+        }
+        result = _validate_pack(data, fallback_pack(), 12, 1)
+        self.assertEqual(1, len(result["guest_stories"]))
+        self.assertEqual("Музыкальная мастерская", result["guest_stories"][0]["title"])
+
     def test_history_filters_used_riddle_and_exposes_only_short_question(self) -> None:
         with TemporaryDirectory() as tmp:
             cfg = {
@@ -104,6 +131,25 @@ class EntertainmentAgentTests(unittest.TestCase):
             self.assertEqual(prompt_exclusions(cfg), [used["question"]])
             paraphrase = {"question": "Что нельзя увидеть, но можно услышать?", "answer": "Эхо"}
             self.assertEqual(filter_unused(cfg, "riddle", [paraphrase]), [])
+
+    def test_planned_history_is_reversible_until_actually_aired(self) -> None:
+        with TemporaryDirectory() as tmp:
+            cfg = {
+                "entertainment_history_file": str(Path(tmp) / "history.json"),
+                "entertainment_history_max_items": 100,
+            }
+            planned = {"question": "Что идёт, не двигаясь?", "answer": "Время"}
+            key = mark_used(cfg, "riddle", planned, mode="planned")
+            self.assertEqual("scheduled", load_items(cfg)[0]["state"])
+            self.assertEqual([], filter_unused(cfg, "riddle", [planned]))
+            self.assertEqual(1, release_scheduled(cfg, [key]))
+            self.assertEqual([planned], filter_unused(cfg, "riddle", [planned]))
+
+            key = mark_used(cfg, "riddle", planned, mode="planned")
+            self.assertEqual(1, mark_aired(cfg, [key]))
+            self.assertEqual("aired", load_items(cfg)[0]["state"])
+            self.assertEqual(0, release_scheduled(cfg, [key]))
+            self.assertEqual([], filter_unused(cfg, "riddle", [planned]))
 
     def test_factcheck_keeps_original_game_payload(self) -> None:
         original = [{

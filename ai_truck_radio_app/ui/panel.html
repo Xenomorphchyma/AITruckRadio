@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>__APP_TITLE__ — панель эфира</title>
+  <style>__VENDOR_CSS__</style>
+  <style>__PANEL_CSS__</style>
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobileMenuBtn" type="button" aria-label="Открыть меню" aria-expanded="false">
+        <i class="bi bi-list" aria-hidden="true"></i>
+      </button>
+      <a class="brand" href="#plan" data-nav-target="plan" aria-label="Волна FM — план эфира">
+        <span class="brand-name" id="stationName">Волна FM</span>
+      </a>
+      <div class="top-status" aria-label="Состояние системы">
+        <span class="run-state" id="runBadge"><span class="status-dot"></span><span id="runBadgeText">Радио остановлено</span></span>
+        <span class="top-metric"><i class="bi bi-music-note-beamed" aria-hidden="true"></i><b id="musicCount">0</b><span>треков</span><i class="bi bi-check-circle-fill metric-ok" id="musicReadyIcon" aria-hidden="true"></i></span>
+        <span class="top-metric"><i class="bi bi-hdd-rack" aria-hidden="true"></i><span>FFmpeg</span><b id="ffmpegTop">проверка</b></span>
+        <span class="top-metric"><i class="bi bi-soundwave" aria-hidden="true"></i><span>OmniVoice</span><b id="voiceTop">настроен</b></span>
+      </div>
+      <div class="top-actions">
+        <button class="button secondary" id="generatePlanTopBtn" type="button"><i class="bi bi-stars" aria-hidden="true"></i><span>Сгенерировать план</span></button>
+        <button class="button primary" id="radioToggleBtn" type="button"><i class="bi bi-play-fill" aria-hidden="true"></i><span>Включить эфир</span></button>
+        <button class="icon-button" type="button" data-nav-target="system" aria-label="Открыть настройки"><i class="bi bi-gear" aria-hidden="true"></i></button>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Разделы панели">
+      <nav class="main-nav">
+        <button type="button" class="nav-item" data-view-target="air"><i class="bi bi-broadcast" aria-hidden="true"></i><span>Эфир</span></button>
+        <button type="button" class="nav-item active" data-view-target="plan" aria-current="page"><i class="bi bi-calendar3" aria-hidden="true"></i><span>План</span></button>
+        <button type="button" class="nav-item" data-view-target="music"><i class="bi bi-music-note-list" aria-hidden="true"></i><span>Музыка</span></button>
+        <button type="button" class="nav-item" data-view-target="news"><i class="bi bi-newspaper" aria-hidden="true"></i><span>Новости</span></button>
+        <button type="button" class="nav-item" data-view-target="hosts"><i class="bi bi-person" aria-hidden="true"></i><span>Ведущие</span></button>
+        <button type="button" class="nav-item" data-view-target="fun"><i class="bi bi-grid" aria-hidden="true"></i><span>Рубрики</span></button>
+        <button type="button" class="nav-item" data-view-target="voice"><i class="bi bi-mic" aria-hidden="true"></i><span>Голос</span></button>
+        <button type="button" class="nav-item" data-view-target="system"><i class="bi bi-gear" aria-hidden="true"></i><span>Система</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="version" id="appVersion"></span>
+        <button type="button" class="text-button" id="keyboardHelpBtn"><i class="bi bi-command" aria-hidden="true"></i><span>Горячие клавиши</span></button>
+      </div>
+    </aside>
+    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="Закрыть меню"></button>
+
+    <main class="workspace" id="workspace">
+      <section class="view" data-view="air" aria-labelledby="airTitle" hidden>
+        <div class="page-head">
+          <div><p class="eyebrow">Управление эфиром</p><h1 id="airTitle">Эфир</h1><p class="page-lead">Запуск, режим вещания и ближайшие элементы программы.</p></div>
+          <div class="page-actions">
+            <button class="button secondary" id="skipAirBtn" type="button"><i class="bi bi-skip-forward-fill" aria-hidden="true"></i>Следующий</button>
+            <button class="button danger-subtle" id="restartAirBtn" type="button"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i>Перезапустить</button>
+          </div>
+        </div>
+        <div class="air-grid">
+          <article class="air-primary">
+            <div class="now-label"><span class="status-dot"></span><span>Сейчас в эфире</span></div>
+            <h2 id="airNowTitle">Эфир остановлен</h2>
+            <p id="airNowMeta">Включите радио, когда система будет готова.</p>
+            <div class="air-progress"><span id="airElapsed">00:00</span><div class="progress-track"><span id="airProgressFill"></span></div></div>
+            <div class="air-controls">
+              <button class="button primary large" id="airPrimaryBtn" type="button"><i class="bi bi-play-fill" aria-hidden="true"></i><span>Включить эфир</span></button>
+              <div class="mode-switch" role="group" aria-label="Режим эфира">
+                <button type="button" id="modePlanAirBtn">Плановый</button><button type="button" id="modeLiveAirBtn">Live</button>
+              </div>
+            </div>
+          </article>
+          <aside class="air-next" aria-labelledby="airNextTitle">
+            <div class="section-line"><h2 id="airNextTitle">Далее</h2><button class="text-button" type="button" data-nav-target="plan">Весь план<i class="bi bi-arrow-right" aria-hidden="true"></i></button></div>
+            <div id="airNextList" class="compact-list"></div>
+          </aside>
+        </div>
+        <details class="settings-block">
+          <summary><span><i class="bi bi-sliders" aria-hidden="true"></i>Настройки Live</span><span class="summary-hint">Частота и содержание выходов ведущих</span></summary>
+          <form class="settings-form" data-settings-form="live"><div class="settings-source" data-settings-source="live"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить Live</button></div></form>
+        </details>
+      </section>
+
+      <section class="view active" data-view="plan" aria-labelledby="planTitle">
+        <div class="plan-workspace">
+          <div class="plan-column">
+            <div class="page-head plan-head">
+              <div><p class="eyebrow">Программа</p><h1 id="planTitle">План эфира</h1><p class="page-lead" id="planDate">Сегодня</p></div>
+              <div class="page-actions">
+                <button class="button secondary" id="planSettingsBtn" type="button" aria-expanded="false" aria-controls="planSettingsDrawer"><i class="bi bi-sliders" aria-hidden="true"></i>Параметры</button>
+                <div class="popover-anchor">
+                  <button class="icon-button" id="planMoreBtn" type="button" aria-label="Действия с планом" aria-expanded="false" aria-controls="planMoreMenu" aria-haspopup="menu"><i class="bi bi-three-dots" aria-hidden="true"></i></button>
+                  <div class="popover-menu" id="planMoreMenu" role="menu" aria-hidden="true" hidden>
+                    <button type="button" id="modePlanBtn" role="menuitem"><i class="bi bi-calendar-check" aria-hidden="true"></i>Включить плановый режим</button>
+                    <button type="button" id="modeLiveBtn" role="menuitem"><i class="bi bi-broadcast" aria-hidden="true"></i>Перейти в Live</button>
+                    <button type="button" id="clearPlanBtn" class="danger-text" role="menuitem"><i class="bi bi-trash" aria-hidden="true"></i>Очистить план</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="task-progress" id="planProgress" hidden>
+              <div><span id="planProgressStatus">Подготовка плана</span><span class="task-progress-actions"><b id="planProgressPercent">0%</b><button class="text-button danger-text" id="cancelPlanBtn" type="button"><i class="bi bi-x-circle" aria-hidden="true"></i><span>Отменить</span></button></span></div>
+              <div class="progress-track"><span id="planProgressFill"></span></div>
+              <p id="planProgressDetail"></p>
+            </div>
+            <div class="timeline" id="planTimeline" aria-live="polite"></div>
+            <div class="timeline-empty" id="planEmpty">
+              <i class="bi bi-calendar-plus" aria-hidden="true"></i>
+              <h2>План ещё не подготовлен</h2>
+              <p>Соберите программу заранее или включите Live-режим.</p>
+              <button class="button primary" id="generatePlanEmptyBtn" type="button"><i class="bi bi-stars" aria-hidden="true"></i>Сгенерировать план</button>
+            </div>
+            <button class="add-plan-item" id="prepareNextPlanBtn" type="button"><i class="bi bi-plus-circle" aria-hidden="true"></i><span>Подготовить следующий блок</span></button>
+          </div>
+
+          <aside class="inspector-column" id="planInspector" aria-label="Выбранный элемент">
+            <div class="inspector-main">
+              <p class="eyebrow">Выбранный элемент</p>
+              <div id="inspectorEmpty" class="inspector-empty"><i class="bi bi-cursor" aria-hidden="true"></i><p>Выберите элемент плана, чтобы увидеть подробности.</p></div>
+              <div id="inspectorContent" hidden>
+                <span class="item-state" id="selectedState">Готово</span>
+                <h2 id="selectedTitle">—</h2>
+                <p class="selected-type" id="selectedType">—</p>
+                <dl class="selected-facts">
+                  <div id="selectedHostRow"><dt><i class="bi bi-person" aria-hidden="true"></i><span id="selectedHostLabel">Ведущий</span></dt><dd id="selectedHost">—</dd></div>
+                  <div><dt><i class="bi bi-clock" aria-hidden="true"></i>Длительность</dt><dd id="selectedDuration">—</dd></div>
+                </dl>
+                <label class="script-field" id="scriptField"><span id="selectedScriptLabel">Текст ведущего</span><textarea id="selectedScript" rows="9" spellcheck="true"></textarea></label>
+                <div class="inspector-actions" id="speechActions">
+                  <button class="button secondary" id="previewSpeechBtn" type="button"><i class="bi bi-play-fill" aria-hidden="true"></i>Прослушать</button>
+                  <button class="button secondary" id="rerenderSpeechBtn" type="button"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i>Переозвучить</button>
+                  <button class="button primary" id="saveSpeechBtn" type="button">Сохранить</button>
+                </div>
+                <p class="speech-operation-status" id="speechOperationStatus" role="status" aria-live="polite"></p>
+                <div class="inspector-item-actions" id="inspectorItemActions" aria-label="Действия с элементом плана">
+                  <button class="button secondary" id="duplicatePlanItemBtn" type="button"><i class="bi bi-copy" aria-hidden="true"></i>Дублировать</button>
+                  <button class="button secondary" id="insertAfterPlanItemBtn" type="button"><i class="bi bi-node-plus" aria-hidden="true"></i>Вставить после</button>
+                  <button class="button secondary danger-subtle" id="deletePlanItemBtn" type="button"><i class="bi bi-trash" aria-hidden="true"></i>Удалить</button>
+                </div>
+              </div>
+            </div>
+            <section class="readiness-panel" id="readinessPanel" aria-labelledby="readinessTitle">
+              <div class="readiness-head"><div><p class="eyebrow">Перед запуском</p><h2 id="readinessTitle">Состояние</h2></div></div>
+              <ul class="readiness-list">
+                <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>Музыка</span><b id="readyMusic">проверка</b></li>
+                <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>FFmpeg</span><b id="readyFfmpeg">проверка</b></li>
+                <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>OmniVoice</span><b id="readyVoice">настроен</b></li>
+                <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>План</span><b id="readyPlan">не готов</b></li>
+              </ul>
+              <p class="readiness-error" id="readinessError" hidden></p>
+            </section>
+          </aside>
+        </div>
+        <div class="plan-settings-drawer" id="planSettingsDrawer" aria-hidden="true">
+          <div class="drawer-head"><div><p class="eyebrow">Плановый эфир</p><h2>Параметры плана</h2></div><button class="icon-button" id="closePlanSettingsBtn" type="button" aria-label="Закрыть параметры"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>
+          <form class="settings-form" data-settings-form="plan"><div class="settings-source" data-settings-source="plan"></div><div class="form-actions sticky"><button class="button primary" type="submit">Сохранить параметры</button></div></form>
+        </div>
+      </section>
+
+      <section class="view settings-view" data-view="music" aria-labelledby="musicTitle" hidden>
+        <div class="page-head"><div><p class="eyebrow">Фонотека и сведения</p><h1 id="musicTitle">Музыка</h1><p class="page-lead">Треки, проверенные факты и источники для подводок.</p></div><div class="page-actions"><button class="button secondary settings-profiles-button" type="button" data-open-settings-profiles><i class="bi bi-layers" aria-hidden="true"></i>Профили</button><button class="button secondary" id="rescanMusicBtn" type="button"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Пересканировать</button><button class="button secondary" id="buildProfilesBtn" type="button"><i class="bi bi-stars" aria-hidden="true"></i>Обновить описания</button><button class="button primary" type="submit" form="musicForm"><i class="bi bi-check2" aria-hidden="true"></i>Сохранить</button></div></div>
+        <div class="operation-status" id="trackProfileOperation"><div><b>Описания треков</b><span id="trackProfileStatus">ожидание</span></div><div class="progress-track"><span id="trackProfileFill"></span></div><p id="trackProfileDetail"></p></div>
+        <form class="settings-form" id="musicForm" data-settings-form="music"><div class="settings-source" data-settings-source="music"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить настройки музыки</button></div></form>
+      </section>
+
+      <section class="view news-view" data-view="news" aria-labelledby="newsTitle" hidden>
+        <div class="page-head">
+          <div><p class="eyebrow">Редакторская проверка</p><h1 id="newsTitle">Новости</h1><p class="page-lead">Короткая лента для эфира: проверьте факты и источники до выхода ведущих.</p></div>
+          <div class="page-actions"><button class="button primary" id="newsRefreshBtn" type="button"><i class="bi bi-arrow-repeat" aria-hidden="true"></i><span>Обновить ленту</span></button></div>
+        </div>
+        <div class="news-toolbar" aria-label="Состояние новостной ленты">
+          <div><span class="news-toolbar-label">Свежесть</span><b id="newsFreshness">Лента ещё не загружена</b></div>
+          <span class="news-pack-badge" id="newsPackBadge">0 материалов</span>
+        </div>
+        <div class="news-fallback" id="newsFallback" hidden><i class="bi bi-info-circle" aria-hidden="true"></i><span>Использована резервная подборка. Проверьте источники особенно внимательно.</span></div>
+        <div class="news-error-banner" id="newsErrorBanner" role="alert" hidden><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><span id="newsErrorText"></span></div>
+        <p class="news-feed-status sr-only" id="newsFeedStatus" role="status" aria-live="polite"></p>
+        <div class="news-feed" id="newsFeed" aria-live="polite" aria-busy="false"></div>
+      </section>
+
+      <section class="view settings-view" data-view="hosts" aria-labelledby="hostsTitle" hidden>
+        <div class="page-head"><div><p class="eyebrow">Команда эфира</p><h1 id="hostsTitle">Ведущие</h1><p class="page-lead">Состав, характер голосов и редкие гости.</p></div><div class="page-actions"><button class="button secondary settings-profiles-button" type="button" data-open-settings-profiles><i class="bi bi-layers" aria-hidden="true"></i>Профили</button><button class="button primary" type="submit" form="hostsForm">Сохранить ведущих</button></div></div>
+        <form class="settings-form hosts-form" id="hostsForm" data-settings-form="hosts"><div class="settings-source" data-settings-source="hosts"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить ведущих</button></div></form>
+      </section>
+
+      <section class="view settings-view" data-view="fun" aria-labelledby="funTitle" hidden>
+        <div class="page-head"><div><p class="eyebrow">Контент между музыкой</p><h1 id="funTitle">Рубрики</h1><p class="page-lead">Гороскопы, загадки, игры и гостевые истории без повторов.</p></div><div class="page-actions"><button class="button secondary settings-profiles-button" type="button" data-open-settings-profiles><i class="bi bi-layers" aria-hidden="true"></i>Профили</button><button class="button secondary danger-subtle" id="clearEntertainmentHistoryBtn" type="button"><i class="bi bi-trash" aria-hidden="true"></i>Очистить повторы</button><button class="button primary" type="submit" form="funForm"><i class="bi bi-check2" aria-hidden="true"></i>Сохранить</button></div></div>
+        <div class="operation-status compact"><div><b>Подготовка рубрик</b><span id="entertainmentStatus">ожидание</span></div></div>
+        <form class="settings-form" id="funForm" data-settings-form="fun"><div class="settings-source" data-settings-source="fun"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить рубрики</button></div></form>
+      </section>
+
+      <section class="view settings-view" data-view="voice" aria-labelledby="voiceTitle" hidden>
+        <div class="page-head"><div><p class="eyebrow">Озвучка и звук</p><h1 id="voiceTitle">Голос</h1><p class="page-lead">TTS, обработка речи, подложка и переходы.</p></div><div class="page-actions"><button class="button secondary settings-profiles-button" type="button" data-open-settings-profiles><i class="bi bi-layers" aria-hidden="true"></i>Профили</button><button class="button primary" type="submit" form="voiceForm">Сохранить голос</button></div></div>
+        <section class="voice-service-card" id="omnivoiceServiceCard" aria-labelledby="omnivoiceServiceTitle">
+          <span class="voice-service-icon"><i class="bi bi-soundwave" aria-hidden="true"></i></span>
+          <div class="voice-service-copy"><div><h2 id="omnivoiceServiceTitle">OmniVoice</h2><span class="service-state" id="omnivoiceServiceState">Остановлен</span></div><p id="omnivoiceServiceDetail">Можно загрузить голосовой движок заранее, не включая эфир.</p></div>
+          <div class="voice-service-actions"><button class="button primary" id="startOmnivoiceBtn" type="button"><i class="bi bi-play-fill" aria-hidden="true"></i><span>Запустить</span></button><button class="button secondary danger-subtle" id="stopOmnivoiceBtn" type="button" hidden><i class="bi bi-stop-fill" aria-hidden="true"></i><span>Остановить</span></button></div>
+        </section>
+        <form class="settings-form" id="voiceForm" data-settings-form="voice"><div class="settings-source" data-settings-source="voice"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить голос</button></div></form>
+      </section>
+
+      <section class="view settings-view" data-view="system" aria-labelledby="systemTitle" hidden>
+        <div class="page-head"><div><p class="eyebrow">Интеграции и файлы</p><h1 id="systemTitle">Система</h1><p class="page-lead">Пути, LM Studio, автоматизация и обслуживание.</p></div><div class="page-actions"><button class="button secondary settings-profiles-button" type="button" data-open-settings-profiles><i class="bi bi-layers" aria-hidden="true"></i>Профили</button><button class="button secondary" id="refreshModelsBtn" type="button"><i class="bi bi-arrow-repeat" aria-hidden="true"></i>Проверить LM Studio</button><button class="button primary" type="submit" form="systemForm">Сохранить систему</button></div></div>
+        <div class="system-tabs" role="tablist" aria-label="Настройки системы"><button type="button" class="active" role="tab" aria-selected="true" data-system-tab="general">Общее</button><button type="button" role="tab" aria-selected="false" data-system-tab="lm">LM Studio</button><button type="button" role="tab" aria-selected="false" data-system-tab="maintenance">Обслуживание</button></div>
+        <form class="settings-form" id="systemForm" data-settings-form="system">
+          <div class="system-tab-panel active" data-system-panel="general"><div class="settings-source" data-settings-source="system"></div></div>
+          <div class="system-tab-panel" data-system-panel="lm" hidden><div class="model-health" id="modelHealth">Модели ещё не проверены.</div><div class="settings-source" data-settings-source="lm"></div></div>
+          <div class="system-tab-panel maintenance-panel" data-system-panel="maintenance" hidden>
+            <section class="maintenance-row"><div><h2>Кэш генераций</h2><p>Удаляет только временную речь и планы. Музыка и reference-голоса сохраняются.</p></div><button class="button secondary danger-subtle" id="clearGeneratedBtn" type="button">Очистить кэш</button></section>
+            <section class="maintenance-row"><div><h2>Перезапуск эфира</h2><p>Останавливает текущий поток и запускает его заново с актуальными настройками.</p></div><button class="button secondary" id="restartSystemBtn" type="button">Перезапустить</button></section>
+          </div>
+          <div class="form-actions"><button class="button primary" type="submit">Сохранить систему</button></div>
+        </form>
+      </section>
+    </main>
+
+    <footer class="player-dock" id="playerDock" aria-label="Плеер эфира">
+      <audio id="radioPlayer" preload="none"></audio>
+      <div class="player-current stopped" id="playerCurrentBlock"><span class="player-icon"><i class="bi bi-broadcast" aria-hidden="true"></i></span><div><span class="player-kicker" id="playerState">Сейчас</span><b id="playerCurrent">Радио остановлено</b><span id="playerCurrentMeta">Эфир не запущен</span></div></div>
+      <div class="player-next"><span class="player-icon muted"><i class="bi bi-music-note-beamed" aria-hidden="true"></i></span><div><span class="player-kicker">Далее</span><b id="playerNext">План не подготовлен</b><span id="playerNextMeta"></span></div></div>
+      <div class="player-controls"><button class="icon-button" id="playerBackBtn" type="button" aria-label="Назад на 15 секунд" disabled><i class="bi bi-skip-start-fill" aria-hidden="true"></i></button><button class="icon-button" id="playBtn" type="button" aria-label="Воспроизвести эфир"><i class="bi bi-play-fill" aria-hidden="true"></i></button><button class="icon-button" id="skipPlayerBtn" type="button" aria-label="Следующий элемент"><i class="bi bi-skip-end-fill" aria-hidden="true"></i></button></div>
+      <label class="volume-control"><i class="bi bi-volume-up" aria-hidden="true"></i><span class="sr-only">Громкость</span><input id="playerVolume" type="range" min="0" max="1" step="0.01" value="0.73"></label>
+      <button class="button secondary live-edge" id="liveEdgeBtn" type="button"><i class="bi bi-broadcast" aria-hidden="true"></i><span>К эфиру</span><small id="playerTime"></small></button>
+      <button class="icon-button player-collapse-direct" id="playerCollapseBtn" type="button" aria-label="Свернуть плеер" aria-expanded="true" aria-controls="playerDock"><i class="bi bi-chevron-down" aria-hidden="true"></i></button>
+    </footer>
+  </div>
+
+  <dialog class="settings-profiles-dialog" id="settingsProfilesDialog" aria-labelledby="settingsProfilesTitle">
+    <div class="profiles-dialog-shell">
+      <div class="profiles-dialog-head"><div><p class="eyebrow">Наборы параметров</p><h2 id="settingsProfilesTitle">Профили настроек</h2></div><button class="icon-button" id="closeSettingsProfilesBtn" type="button" aria-label="Закрыть профили"><i class="bi bi-x-lg" aria-hidden="true"></i></button></div>
+      <p class="profiles-dialog-lead">Сохраняются параметры эфира и обработки. Локальные пути, reference-голоса и секреты в профиль не попадают.</p>
+      <label class="profile-picker"><span>Выбранный профиль</span><select id="settingsProfileSelect" aria-describedby="settingsProfileHint"></select></label>
+      <p class="profile-hint" id="settingsProfileHint">Встроенный профиль «По умолчанию» можно только применить.</p>
+      <div class="profile-apply-row"><button class="button primary" id="applySettingsProfileBtn" type="button"><i class="bi bi-check2-circle" aria-hidden="true"></i>Применить</button></div>
+      <div class="profile-manage">
+        <label><span>Название пользовательского профиля</span><input id="settingsProfileName" type="text" maxlength="48" autocomplete="off" placeholder="Например, Ночной эфир"></label>
+        <div class="profile-manage-actions"><button class="button secondary" id="createSettingsProfileBtn" type="button"><i class="bi bi-plus-lg" aria-hidden="true"></i>Сохранить текущие</button><button class="button secondary" id="renameSettingsProfileBtn" type="button"><i class="bi bi-pencil" aria-hidden="true"></i>Переименовать</button><button class="button secondary danger-subtle" id="deleteSettingsProfileBtn" type="button"><i class="bi bi-trash" aria-hidden="true"></i>Удалить</button></div>
+      </div>
+      <p class="profile-status" id="settingsProfileStatus" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <dialog class="confirm-dialog" id="confirmDialog">
+    <form method="dialog"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><h2 id="confirmTitle">Подтвердите действие</h2><p id="confirmText"></p><div><button class="button secondary" value="cancel">Отмена</button><button class="button danger" id="confirmAcceptBtn" value="confirm">Продолжить</button></div></form>
+  </dialog>
+  <dialog class="keyboard-dialog" id="keyboardDialog">
+    <form method="dialog"><button class="icon-button dialog-close" value="close" aria-label="Закрыть"><i class="bi bi-x-lg" aria-hidden="true"></i></button><h2>Горячие клавиши</h2><dl><div><dt><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>N</kbd></dt><dd>Следующий элемент эфира</dd></div><div><dt><kbd>/</kbd></dt><dd>Перейти к навигации</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Закрыть панель или меню</dd></div></dl></form>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div class="screen-status sr-only" id="screenStatus" role="status" aria-live="polite"></div>
+  <script type="application/json" id="radioBootstrap">__BOOTSTRAP_JSON__</script>
+  <script>__PANEL_JS__</script>
+</body>
+</html>

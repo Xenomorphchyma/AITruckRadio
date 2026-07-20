@@ -22,6 +22,9 @@ jobs:
       - name: Ruff
         run: ruff check .
 
+      - name: Compile Python sources
+        run: python -m compileall -q ai_truck_radio.py ai_truck_radio_app tools tests
+
       - name: Pyright
         run: pyright
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +37,8 @@ class PreparedDJ:
     previous_key: str
     next_key: str
     created_ts: float
+    history_keys: List[str] = field(default_factory=list)
+    news_items: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -46,6 +48,11 @@ class PlannedItem:
     title: str
     text: str = ""
     duration_sec: float = 0.0
+    # Content (news/rubric/guest) reservations attached to this speech block.
+    # They are promoted from ``scheduled`` to ``aired`` only after the audio
+    # was actually streamed, so deleting a plan cannot consume unused content.
+    history_keys: List[str] = field(default_factory=list)
+    news_items: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def track_key(track: Optional[Track]) -> str:

@@ -13,6 +13,7 @@ __pycache__/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.tmp/
 build/
 dist/
 *.egg-info/
@@ -34,6 +35,7 @@ cache/test_*
 
 # Local user config
 config.json
+settings_profiles.json
 
 # User media and large local assets
 music/*
