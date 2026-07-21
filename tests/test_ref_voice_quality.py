@@ -92,6 +92,10 @@ def _install_fake_gigaam(
 
 def test_repository_reference_sidecars_pass_structural_quality_checks() -> None:
     root = Path(__file__).parents[1] / "references"
+    required_files = [root / f"{stem}{suffix}" for stem in ("maxim_ref", "irina_ref") for suffix in (".wav", ".txt")]
+    missing_files = [path.name for path in required_files if not path.is_file()]
+    if missing_files:
+        pytest.skip("Локальные reference-файлы не входят в Git: " + ", ".join(missing_files))
     for stem in ("maxim_ref", "irina_ref"):
         report = inspect_reference_pair({"reference_asr_language": "ru"}, root / f"{stem}.wav")
         assert report.ok, f"{stem}: {report.error}"
