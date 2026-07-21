@@ -10,10 +10,11 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from ai_truck_radio_app.ref_voice import transcribe_reference_audio
-
-
 def main() -> int:
+    # Imported after the project root is added to sys.path so this standalone
+    # diagnostic can be launched from any working directory.
+    from ai_truck_radio_app.ref_voice import transcribe_reference_audio
+
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", nargs="?", default="references/maxim_ref.wav")
     parser.add_argument("--level", choices=["fast", "balanced", "maximum"], default="fast")

@@ -295,13 +295,13 @@ def _normalize_transcript_for_comparison(text: str, expected_language: str) -> s
     language = str(expected_language or "").strip().lower().replace("_", "-").split("-", 1)[0]
     tokens = re.findall(r"[A-Za-zА-Яа-яЁё]+|\d+", str(text or "").casefold().replace("ё", "е"))
     normalized: List[str] = []
-    for token in tokens:
-        if token.isdigit() and language == "ru":
-            normalized.extend(_ru_number_words(int(token)).split())
-        elif language == "ru" and token == "че":
+    for word in tokens:
+        if word.isdigit() and language == "ru":
+            normalized.extend(_ru_number_words(int(word)).split())
+        elif language == "ru" and word == "че":
             normalized.append("что")
         else:
-            normalized.append(token)
+            normalized.append(word)
     return " ".join(normalized)
 
 
@@ -624,7 +624,7 @@ def _transcribe_gigaam_pass(
         return tensor.contiguous()
 
     if use_soundfile_loader and giga_model_module is not None:
-        giga_model_module.load_audio = load_audio_without_ffmpeg
+        setattr(giga_model_module, "load_audio", load_audio_without_ffmpeg)
     try:
         load_kwargs = {
             "device": device or None,
@@ -661,7 +661,7 @@ def _transcribe_gigaam_pass(
         return AsrPassResult("", False, str(exc), (), model_name, device or "auto", "")
     finally:
         if use_soundfile_loader and giga_model_module is not None and original_audio_loader is not None:
-            giga_model_module.load_audio = original_audio_loader
+            setattr(giga_model_module, "load_audio", original_audio_loader)
         os.environ["PATH"] = original_path
         if not keep_model_loaded:
             model = None
