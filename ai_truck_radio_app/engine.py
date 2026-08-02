@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ai_truck_radio_app.config import (
     APP_VERSION,
@@ -368,16 +368,25 @@ class RadioEngine:
         self.news_agent = NewsAgent(self.cfg, self.lm)
         self.weather = WeatherClient(self.cfg)
         self.track_profiles = load_track_profiles(self.cfg) if self.cfg.get("track_profiles_enabled", True) else {}
-        try:
-            self.tts.prewarm_omnivoice_worker(self.cfg.get("hosts") or [])
-        except Exception as e:
-            log(f"OmniVoice prewarm пропущен: {e}")
+        with self.plan_lock:
+            ready_preplanned_show = bool(
+                self.cfg.get("show_plan_enabled", False)
+                and self.show_plan
+                and self.show_plan_index < len(self.show_plan)
+            )
+        if ready_preplanned_show:
+            log("Готовый план уже озвучен — пропускаю повторный прогрев OmniVoice и подготовку контента перед стартом")
+        else:
+            try:
+                self.tts.prewarm_omnivoice_worker(self.cfg.get("hosts") or [])
+            except Exception as e:
+                log(f"OmniVoice prewarm пропущен: {e}")
         if self.startup_cancel_event.is_set() or self._run_generation != run_generation:
             log("Запуск радио отменён во время подготовки OmniVoice")
             return
         prepare_guest = bool(self.cfg.get("guest_enabled", False) and self.cfg.get("guest_generate_before_radio", True))
         prepare_rubrics = bool(self.cfg.get("horoscope_generate_before_radio", True))
-        if self.cfg.get("entertainment_enabled", False) and (prepare_rubrics or prepare_guest):
+        if (not ready_preplanned_show) and self.cfg.get("entertainment_enabled", False) and (prepare_rubrics or prepare_guest):
             try:
                 self.prepare_entertainment_pack("radio_start")
                 log("Рубрики перед эфиром готовы: " + self.entertainment_status)
@@ -387,6 +396,8 @@ class RadioEngine:
             log("Запуск радио отменён во время подготовки рубрик")
             return
         if (
+            not ready_preplanned_show
+            and
             self.cfg.get("news_enabled", True)
             and self.cfg.get("news_agent_enabled", True)
             and self.cfg.get("news_agent_generate_before_radio", True)
@@ -905,6 +916,48 @@ class RadioEngine:
                 except Exception as exc:
                     log(f"Не удалось записать выход новости: {exc}")
 
+    @staticmethod
+    def _entertainment_pack_status(pack: Dict[str, Any], *, cached: bool) -> str:
+        counts = {
+            "horoscope": len(pack.get("horoscope") or []),
+            "riddles": len(pack.get("riddles") or []),
+            "wrong_games": len(pack.get("wrong_games") or []),
+            "guest_stories": len(pack.get("guest_stories") or []),
+        }
+        validation = pack.get("_validation") or {}
+        fallback_used = validation.get("fallback_used") or {}
+        if not fallback_used:
+            prefix = "дневной кэш загружен: " if cached else "агент подготовил рубрики: "
+            return (
+                prefix
+                + f"{counts['horoscope']} знаков, {counts['riddles']} загадок, "
+                + f"{counts['wrong_games']} игр, {counts['guest_stories']} гостевых историй"
+            )
+
+        labels = {
+            "horoscope": "прогнозов",
+            "riddles": "загадок",
+            "wrong_games": "игр",
+            "guest_stories": "гостевых историй",
+        }
+        verified = [
+            f"{counts[key]} {labels[key]}"
+            for key in labels
+            if counts[key] and fallback_used.get(key) is False
+        ]
+        fallback = [
+            f"{counts[key]} {labels[key]}"
+            for key in labels
+            if counts[key] and fallback_used.get(key) is True
+        ]
+        parts = []
+        if verified:
+            parts.append("из источников — " + ", ".join(verified))
+        if fallback:
+            parts.append("резервные — " + ", ".join(fallback))
+        prefix = "дневной кэш: " if cached else "агент: "
+        return prefix + "; ".join(parts or ["пакет подготовлен"])
+
     def prepare_entertainment_pack(self, reason: str = 'auto') -> Dict[str, Any]:
         if not self.cfg.get('entertainment_enabled', False):
             return {}
@@ -917,11 +970,7 @@ class RadioEngine:
             try:
                 cached_pack = self.entertainment_agent.load_daily_cache()
                 pack = cached_pack or self.entertainment_agent.build(pack)
-                self.entertainment_status = (
-                    ("дневной кэш загружен: " if cached_pack else "агент подготовил рубрики: ")
-                    + f"{len(pack.get('horoscope') or [])} знаков, "
-                    f"{len(pack.get('riddles') or [])} загадок, {len(pack.get('wrong_games') or [])} игр"
-                )
+                self.entertainment_status = self._entertainment_pack_status(pack, cached=bool(cached_pack))
                 self.entertainment_pack = pack
                 self.entertainment_pack_date = today
                 self.horoscope_index = 0
@@ -1034,6 +1083,9 @@ class RadioEngine:
                 'dj_topic_label': 'ответ на загадку и музыкальная подводка',
                 'dj_length': 'medium',
                 'riddle_answer_block': True,
+                'riddle_question_text': q,
+                'riddle_correct_answer': ans,
+                'riddle_explanation': expl,
             })
         if (current_block - self.last_entertainment_block) < max(0, int(self.cfg.get('entertainment_min_blocks_between', 1) or 1)):
             return {}
@@ -1059,6 +1111,7 @@ class RadioEngine:
                         'dj_topic_label': 'гость в эфире и музыкальная подводка',
                         'dj_length': 'medium',
                         'force_guest': True,
+                        'guest_story_data': dict(g),
                         'entertainment_history_keys': [history_key],
                     })
         # Игра “ответь неправильно” может вклиниться между гороскопами/загадками.
@@ -1076,6 +1129,9 @@ class RadioEngine:
                         'entertainment_instruction': 'Один ведущий задаёт вопрос, второй должен ответить явно неправильно. Если ответ хоть как-то правильный или хитро правдивый — он проиграл. Обсудите это весело и коротко, затем подведите к следующей музыке.',
                         'dj_topic_label': 'игра «ответь неправильно» и музыкальная подводка',
                         'dj_length': 'medium',
+                        'wrong_game_question': str(g.get('question') or ''),
+                        'wrong_game_correct_answer': str(g.get('correct') or ''),
+                        'wrong_game_wrong_examples': list(g.get('wrong_examples') or []),
                         'entertainment_history_keys': [history_key],
                     })
         # Чередование: 2–3 гороскопа, затем загадка.
@@ -1100,6 +1156,9 @@ class RadioEngine:
                         'dj_topic_label': 'загадка с вариантами ответа',
                         'dj_length': 'medium',
                         'riddle_question_block': True,
+                        'riddle_question_text': str(r.get('question') or ''),
+                        'riddle_correct_answer': str(r.get('answer') or ''),
+                        'riddle_options': list(opts),
                         'entertainment_history_keys': [history_key],
                     })
         if self.cfg.get('horoscope_enabled', True):
@@ -1152,6 +1211,79 @@ class RadioEngine:
         selected.extend(random.sample(extras, k=max(0, desired - len(selected))))
         random.shuffle(selected)
         return selected
+
+    def _safe_entertainment_dialogue(
+        self,
+        ctx: Dict[str, Any],
+        selected_hosts: List[Dict[str, Any]],
+        next_track: Optional[Track],
+    ) -> str:
+        """Build a fact-preserving rubric when a small LM keeps breaking rules."""
+        names = [
+            str(host.get("name") or "").strip()
+            for host in selected_hosts
+            if isinstance(host, dict) and str(host.get("name") or "").strip()
+        ]
+        guest_name = str(ctx.get("guest_name") or self.cfg.get("guest_name") or "Гость").strip() or "Гость"
+        presenter_names = [name for name in names if name.casefold() != guest_name.casefold()]
+        first = presenter_names[0] if presenter_names else (names[0] if names else "Ведущий")
+        second = presenter_names[1] if len(presenter_names) > 1 else first
+        next_title = next_track.display_name if next_track else "следующей композиции"
+
+        if ctx.get("riddle_question_block"):
+            question = str(ctx.get("riddle_question_text") or "").strip().rstrip(" .?!")
+            options = [str(value).strip() for value in (ctx.get("riddle_options") or []) if str(value).strip()]
+            if not question:
+                return ""
+            option_text = ", ".join(options)
+            choices = f" Варианты: {option_text}." if option_text else ""
+            return (
+                f"{first}: Время для загадки. {question}?{choices} "
+                "Ответ прозвучит в следующий выход ведущих после одной из песен. "
+                f"{second}: А сейчас слушаем «{next_title}» и выбираем свой вариант."
+            )
+
+        if ctx.get("riddle_answer_block"):
+            question = str(ctx.get("riddle_question_text") or "").strip()
+            answer = str(ctx.get("riddle_correct_answer") or "").strip()
+            explanation = str(ctx.get("riddle_explanation") or "").strip()
+            if not answer:
+                return ""
+            question_text = f" На вопрос «{question}»" if question else ""
+            explanation_text = f" {explanation}" if explanation else ""
+            return (
+                f"{first}:{question_text} правильный ответ — {answer}.{explanation_text} "
+                f"{second}: Загадка раскрыта, а дальше — «{next_title}»."
+            )
+
+        wrong_question = str(ctx.get("wrong_game_question") or "").strip().rstrip(" .?!")
+        if wrong_question:
+            wrong_examples = [
+                str(value).strip()
+                for value in (ctx.get("wrong_game_wrong_examples") or [])
+                if str(value).strip()
+            ]
+            deliberately_wrong = wrong_examples[0] if wrong_examples else "совершенно невозможный вариант"
+            return (
+                f"{first}: Играем в «ответь неправильно». {wrong_question}? "
+                f"{second}: Мой намеренно неправильный ответ — {deliberately_wrong}. "
+                f"{first}: Отлично, правило соблюдено. Продолжаем с «{next_title}»."
+            )
+
+        if ctx.get("force_guest"):
+            story_data = ctx.get("guest_story_data") or {}
+            if not isinstance(story_data, dict):
+                story_data = {}
+            story = str(story_data.get("story") or story_data.get("text") or "").strip()
+            if not story:
+                return ""
+            guest_intro = "гость эфира" if guest_name.casefold() in {"гость", "слушатель"} else guest_name
+            return (
+                f"{first}: У нас на связи {guest_intro}. Расскажите вашу историю. "
+                f"{guest_name}: {story} "
+                f"{second}: Спасибо за эту историю. А теперь слушаем «{next_title}»."
+            )
+        return ""
 
     def build_context(self, selected_hosts: Optional[List[Dict[str, Any]]] = None, two_hosts: Optional[bool] = None, intro_allowed_override: Optional[bool] = None, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         night = is_night_now(self.cfg)
@@ -1283,7 +1415,16 @@ class RadioEngine:
                 limit = max(1, int(self.cfg.get("recent_context_items", 5)))
                 self.recent_host_texts = self.recent_host_texts[-limit:]
 
-    def create_dj_segment(self, previous_track: Optional[Track], next_track: Optional[Track], *, intro_allowed: Optional[bool] = None, mark_aired: bool = False, context_overrides: Optional[Dict[str, Any]] = None) -> Optional[PreparedDJ]:
+    def create_dj_segment(
+        self,
+        previous_track: Optional[Track],
+        next_track: Optional[Track],
+        *,
+        intro_allowed: Optional[bool] = None,
+        mark_aired: bool = False,
+        context_overrides: Optional[Dict[str, Any]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Optional[PreparedDJ]:
         selected_hosts, two = self._select_hosts_for_insert(bool(intro_allowed))
         text = ""
         ctx: Dict[str, Any] = {}
@@ -1296,6 +1437,7 @@ class RadioEngine:
                     if not any(isinstance(h, dict) and str(h.get('name','')).strip().lower() == str(guest_host.get('name','')).strip().lower() for h in selected_hosts):
                         selected_hosts = list(selected_hosts) + [guest_host]
                     ctx['hosts'] = selected_hosts
+                    ctx['guest_name'] = str(guest_host.get('name') or 'Гость').strip() or 'Гость'
                     ctx['guest_ref_status'] = self._guest_ref_status()
                 ctx["previous_track_name"] = previous_track.display_name if previous_track else "ещё ничего не играло"
                 ctx["next_track_name"] = next_track.display_name if next_track else "следующий трек не выбран"
@@ -1307,22 +1449,51 @@ class RadioEngine:
                     names_present = [str(h.get("name", "")).strip() for h in selected_hosts[:2]]
                     return [nm for nm in names_present if nm and not re.search(rf"(?m)(^|\s){re.escape(nm)}\s*:", candidate_text)]
 
+                def _cancelled() -> bool:
+                    if not cancel_check or not cancel_check():
+                        return False
+                    self._release_content_reservations(
+                        history_keys=list(ctx.get("entertainment_history_keys") or []),
+                        news_items=list(ctx.get("news_items") or []),
+                        mode="generation_cancelled",
+                    )
+                    log("Подготовка речевого блока отменена до озвучки")
+                    return True
+
                 raw_text = self.lm.generate_host_line(previous_track, next_track, ctx)
+                if _cancelled():
+                    return None
                 text = postprocess_host_text_for_air(raw_text, ctx)
                 # Проверяем базовый runtime-контекст до TTS. Если модель вдруг
                 # говорит про полночь в 15:00 или вспоминает прошлый трек на
                 # стартовом эфире, повторяем запрос с тем же полным контекстом.
                 context_attempts = max(1, int(self.cfg.get("host_clock_retry_attempts", 3) or 3))
+                if any(ctx.get(key) for key in (
+                    "horoscope_expected",
+                    "riddle_question_block",
+                    "riddle_answer_block",
+                    "wrong_game_question",
+                    "force_guest",
+                )):
+                    # These blocks have structured facts and a deterministic
+                    # rubric fallback.  Small local models tend to repeat the
+                    # same mistake, so one corrected retry is enough; four slow
+                    # generations only make plan preparation look frozen.
+                    context_attempts = min(context_attempts, 1)
                 for context_attempt in range(1, context_attempts + 1):
                     violations = context_violations_for_host_text(text, ctx)
                     if not violations:
                         break
+                    if _cancelled():
+                        return None
                     log("LM Studio нарушил контекст эфира — повторяю запрос " + str(context_attempt) + "/" + str(context_attempts) + ": " + "; ".join(violations))
                     ctx_retry = dict(ctx)
                     ctx_retry["retry_reason"] = "; ".join(violations)
                     if intro_allowed and two and len(selected_hosts) >= 2:
                         ctx_retry["force_duo_intro_dialogue"] = True
                     raw_text = self.lm.generate_host_line(previous_track, next_track, ctx_retry)
+                    if _cancelled():
+                        return None
                     text = postprocess_host_text_for_air(raw_text, ctx_retry)
                     ctx = ctx_retry
                 if context_violations_for_host_text(text, ctx):
@@ -1337,11 +1508,15 @@ class RadioEngine:
                     for attempt in range(1, attempts + 1):
                         if not missing:
                             break
+                        if _cancelled():
+                            return None
                         log(f"LM Studio вернул вступление без {', '.join(missing)} — повторяю запрос {attempt}/{attempts} с требованием полноценного диалога")
                         ctx_retry = dict(ctx)
                         ctx_retry["force_duo_intro_dialogue"] = True
                         ctx_retry["duo_retry_attempt"] = attempt
                         raw_text = self.lm.generate_host_line(previous_track, next_track, ctx_retry)
+                        if _cancelled():
+                            return None
                         text = postprocess_host_text_for_air(raw_text, ctx_retry)
                         ctx = ctx_retry
                         missing = _duo_missing_names(text)
@@ -1371,6 +1546,56 @@ class RadioEngine:
                         if forecasts:
                             text = f"{host_name}: Гороскоп на сегодня. " + " ".join(forecasts)
                             log("Гороскоп собран из проверенного пакета без повторного пересказа моделью")
+                    remaining_violations = context_violations_for_host_text(text, ctx)
+                    if remaining_violations:
+                        fallback_names = [
+                            str(host.get("name") or "").strip()
+                            for host in selected_hosts
+                            if isinstance(host, dict) and str(host.get("name") or "").strip()
+                        ]
+                        rubric_fallback = self._safe_entertainment_dialogue(ctx, selected_hosts, next_track)
+                        if rubric_fallback:
+                            text = rubric_fallback
+                        elif intro_allowed and fallback_names:
+                            daypart = daypart_name_for_hour(int(ctx.get("computer_hour", time.localtime().tm_hour) or 0))
+                            greeting = {
+                                "утро": "Доброе утро",
+                                "день": "Добрый день",
+                                "вечер": "Добрый вечер",
+                                "ночь": "Доброй ночи",
+                            }.get(daypart, "Здравствуйте")
+                            station = str(ctx.get("station_name") or self.cfg.get("station_name") or "Волна FM").strip()
+                            spoken_time = str(ctx.get("spoken_time_text") or "").strip()
+                            time_phrase = f" Сейчас {spoken_time}." if spoken_time else ""
+                            track_title = next_track.display_name if next_track else "первого трека нашей программы"
+                            people = " и ".join(fallback_names[:2])
+                            first_line = (
+                                f"{fallback_names[0]}: {greeting}. Это {station}; в студии {people}.{time_phrase}"
+                            )
+                            if len(fallback_names) >= 2:
+                                text = (
+                                    f"{first_line} {fallback_names[1]}: Начинаем эфир с трека «{track_title}». "
+                                    "Оставайтесь с нами, впереди хорошая музыка."
+                                )
+                            else:
+                                text = (
+                                    f"{first_line} Начинаем эфир с трека «{track_title}». "
+                                    "Оставайтесь с нами, впереди хорошая музыка."
+                                )
+                        elif len(fallback_names) >= 2:
+                            text = (
+                                f"{fallback_names[0]}: Держим эфир живым и тёплым, следующий трек уже рядом. "
+                                f"{fallback_names[1]}: Оставайтесь с нами, впереди хорошая музыка."
+                            )
+                        else:
+                            fallback_name = fallback_names[0] if fallback_names else "Ведущий"
+                            text = f"{fallback_name}: Держим эфир живым и тёплым, следующий трек уже рядом."
+                        log(
+                            "Ответ модели после повторов остался фактически недостоверным; "
+                            "использую проверенную эфирную реплику"
+                            + (" для текущей рубрики" if rubric_fallback else "")
+                            + ": " + "; ".join(remaining_violations)
+                        )
             except Exception as e:
                 self.set_error(f"LM Studio недоступен или не ответил: {e}")
                 log(f"LM Studio не ответил, беру fallback-фразу: {e}")
@@ -1401,6 +1626,14 @@ class RadioEngine:
             text = re.sub(r"(?i)\b(добро пожаловать|начинаем эфир|с вами снова)\b[^.!?…]*[.!?…]?", "", text).strip() or text
         if self.cfg.get("tts_debug_log", True):
             log("Текст для TTS: " + " ".join(text.split())[:500])
+        if cancel_check and cancel_check():
+            self._release_content_reservations(
+                history_keys=list(ctx.get("entertainment_history_keys") or []),
+                news_items=list(ctx.get("news_items") or []),
+                mode="generation_cancelled_before_tts",
+            )
+            log("Подготовка речевого блока отменена перед озвучкой")
+            return None
         mp3 = self.tts.get_or_create_dialogue_mp3(text, selected_hosts or self.cfg.get("hosts") or [])
         if not mp3:
             self.set_error("Не удалось создать озвучку ведущего. Радио продолжит музыку без вставки.")
@@ -2386,7 +2619,10 @@ class RadioEngine:
         generation_started_ts = time.time()
         self.show_plan_status = f"готовлю программу эфира минимум на {target_sec/60:.0f} мин: музыка + речь + переходы..."
         self.show_plan_progress = {"current": 0, "total": 100, "percent": 0, "detail": "подбираю музыкальную сетку"}
-        self.set_now(self.show_plan_status, "planning")
+        # A continuation plan may be prepared while the station is already on
+        # air.  Keep the player title tied to what listeners actually hear.
+        if not self.is_running():
+            self.set_now(self.show_plan_status, "planning")
         log(self.show_plan_status)
 
         # Select enough tracks first, so every speech block knows the real previous/next track.
@@ -2461,7 +2697,20 @@ class RadioEngine:
                 "planned_previous_track": prev_track.display_name if prev_track else "ещё ничего не играло",
                 "planned_next_track": next_track.display_name if next_track else "следующий трек не выбран",
             }
-            seg = self.create_dj_segment(prev_track, next_track, intro_allowed=intro, mark_aired=False, context_overrides=overrides)
+            def generation_cancelled() -> bool:
+                if generation is None:
+                    return False
+                with self.plan_lock:
+                    return generation != self._plan_generation
+
+            seg = self.create_dj_segment(
+                prev_track,
+                next_track,
+                intro_allowed=intro,
+                mark_aired=False,
+                context_overrides=overrides,
+                cancel_check=generation_cancelled,
+            )
             if not seg:
                 return
             dur = ffprobe_duration(self.cfg, seg.mp3) or 25.0
@@ -2558,6 +2807,17 @@ class RadioEngine:
                 except Exception as e:
                     self.show_plan_status = f"следующий план не собрался: {e}"
                     log(self.show_plan_status)
+                finally:
+                    with self.plan_lock:
+                        if self._plan_cancel_requested_generation == generation:
+                            self._plan_cancel_requested_generation = None
+                            self.show_plan_status = "подготовка следующего блока отменена"
+                            self.show_plan_progress = {
+                                "current": 0,
+                                "total": 0,
+                                "percent": 0,
+                                "detail": "отменено пользователем",
+                            }
             self.plan_prepare_thread = threading.Thread(target=worker, name="PrepareNextShowPlan", daemon=True)
             self.plan_prepare_thread.start()
 
@@ -2821,6 +3081,11 @@ class RadioEngine:
                 if self.show_plan_active_index == item_index:
                     self.show_plan_active_index = -1
             self._save_current_show_plan()
+            # A skip belongs to one item only.  Leaving it set fast-forwards all
+            # remaining plan items and every filler track as well.
+            self.skip_event.clear()
+        if self.stop_event.is_set():
+            return
         with self.plan_lock:
             plan_finished = self.show_plan_index >= len(self.show_plan)
         if plan_finished:

@@ -181,6 +181,38 @@ def test_two_pass_factcheck_independent_domains_and_official_source(tmp_path: Pa
     assert pack["fallback_used"] is False
 
 
+def test_official_homepage_without_publication_date_cannot_verify_story(tmp_path: Path) -> None:
+    agent = NewsAgent(make_cfg(tmp_path), FakeLM(), now_fn=lambda: 1000)
+    items = [{
+        "draft_id": "news-1",
+        "title": "Недостаточно подтверждённая новость",
+        "summary": "Этот текст достаточно длинный для проверки статуса источника.",
+        "status": "draft",
+        "status_history": [{"status": "draft", "at": 1000}],
+        "expires_at": 4600,
+    }]
+    sources = [{
+        "source_id": 1,
+        "url": "https://official.gov/",
+        "independent_domain": "official.gov",
+        "official": True,
+        "published_at": "",
+        "expires_at": 4600,
+    }]
+    checked = {"items": [{
+        "draft_id": "news-1",
+        "decision": "verified",
+        "source_ids": [1],
+        "notes": "Модель ошибочно согласилась.",
+    }]}
+
+    agent._factcheck_items(items, checked, sources, 1000)
+
+    assert items[0]["status"] == "review"
+    assert items[0]["status_reason"] == "sources_missing_direct_url_or_date"
+    assert items[0]["official_source_ids"] == []
+
+
 def test_valid_cache_skips_search_and_lm(tmp_path: Path) -> None:
     cfg = make_cfg(tmp_path)
     search, read, search_calls, _ = source_fakes()

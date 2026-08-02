@@ -5,6 +5,7 @@ import json
 import re
 import time
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -87,6 +88,30 @@ def _canonical_url(url: str) -> str:
     host = parsed.hostname.casefold().removeprefix("www.")
     path = parsed.path.rstrip("/") or "/"
     return urllib.parse.urlunparse(("https", host, path, "", parsed.query, ""))
+
+
+def _is_direct_article_url(url: str) -> bool:
+    """Reject home pages and broad section pages as factual evidence."""
+    parsed = urllib.parse.urlparse(str(url or ""))
+    parts = [urllib.parse.unquote(part).strip().casefold() for part in parsed.path.split("/") if part.strip()]
+    if not parts:
+        return False
+    generic_sections = {
+        "article", "articles", "latest", "main", "news", "novosti", "politics",
+        "society", "sport", "world", "region", "regions", "russia",
+    }
+    return not (len(parts) == 1 and parts[0] in generic_sections)
+
+
+def _has_publication_date(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
 
 
 def _values(value: Any) -> List[str]:
@@ -221,6 +246,7 @@ class NewsAgent:
         )
         signature = {key: self.cfg.get(key) for key in keys}
         signature.update({
+            "source_evidence_policy": 2,
             "queries": list(queries),
             "official_domains": self._official_domains(),
             "min_independent_domains": int(self.cfg.get("news_agent_min_independent_domains", 2) or 2),
@@ -312,6 +338,7 @@ class NewsAgent:
                 "official": bool(page.get("official") or result.get("official") or is_configured_official),
                 "official_path": bool(result.get("official_path")),
                 "published_at": _clean(page.get("published_at") or result.get("published_at"), 80),
+                "direct_article": _is_direct_article_url(url),
                 "fetched_at": now,
                 "expires_at": now + ttl_sec,
             }
@@ -408,8 +435,13 @@ class NewsAgent:
                 continue
             source_ids = _valid_source_ids(decision.get("source_ids"), valid_ids)
             cited = [source_by_id[source_id] for source_id in source_ids]
-            official_ids = [int(source["source_id"]) for source in cited if source.get("official")]
-            domains = sorted({str(source["independent_domain"]) for source in cited})
+            eligible = [
+                source for source in cited
+                if bool(source.get("direct_article", _is_direct_article_url(str(source.get("url") or ""))))
+                and _has_publication_date(source.get("published_at"))
+            ]
+            official_ids = [int(source["source_id"]) for source in eligible if source.get("official")]
+            domains = sorted({str(source["independent_domain"]) for source in eligible})
             item = dict(item)
             item["source_ids"] = source_ids
             item["source_domains"] = domains
@@ -423,6 +455,8 @@ class NewsAgent:
                 status, reason = "rejected", "factcheck_rejected"
             elif result == "review":
                 status, reason = "review", "factcheck_requested_review"
+            elif len(eligible) != len(cited):
+                status, reason = "review", "sources_missing_direct_url_or_date"
             elif official_ids:
                 status, reason = "verified", "official_source"
             elif len(domains) >= min_domains:
@@ -507,6 +541,7 @@ class NewsAgent:
                 checked = self._generate(
                     "Вторым независимым проходом проверь каждый DRAFT по SOURCE. Не переписывай новость. "
                     "verified ставь только при полном подтверждении, review — при сомнении, rejected — при ошибке. "
+                    "Корневая страница сайта или источник без даты публикации не подтверждают новость. "
                     "Верни draft_id, decision, подтверждающие source_ids и notes.\n\nDRAFTS:\n"
                     + json.dumps(factcheck_payload, ensure_ascii=False)
                     + "\n\nSOURCE:\n"

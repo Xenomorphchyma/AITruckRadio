@@ -1105,13 +1105,13 @@
     const toggleButtons = [byId('radioToggleBtn'), byId('airPrimaryBtn')];
     toggleButtons.forEach((button) => {
       if (!button) return;
-      button.disabled = starting;
+      button.disabled = false;
       const label = $('span', button);
-      if (label) label.textContent = running ? 'Выключить эфир' : (starting ? 'Запускается' : 'Включить эфир');
+      if (label) label.textContent = running ? 'Выключить эфир' : (starting ? 'Отменить запуск' : 'Включить эфир');
       const icon = $('.bi', button);
-      if (icon) icon.className = `bi ${running ? 'bi-stop-fill' : 'bi-play-fill'}`;
-      button.classList.toggle('danger-subtle', running);
-      button.classList.toggle('primary', !running);
+      if (icon) icon.className = `bi ${running ? 'bi-stop-fill' : (starting ? 'bi-x-lg' : 'bi-play-fill')}`;
+      button.classList.toggle('danger-subtle', running || starting);
+      button.classList.toggle('primary', !running && !starting);
     });
     ['modePlanAirBtn','modePlanBtn'].forEach((id) => byId(id)?.classList.toggle('active', Boolean(status.show_plan_enabled)));
     ['modeLiveAirBtn','modeLiveBtn'].forEach((id) => byId(id)?.classList.toggle('active', !status.show_plan_enabled));
@@ -1255,7 +1255,7 @@
     } catch (error) { say(`Не удалось остановить: ${error.message}`, 'error'); }
   }
 
-  async function toggleRadio() { return status.radio_running ? stopRadio() : startRadio(); }
+  async function toggleRadio() { return (status.radio_running || status.radio_starting) ? stopRadio() : startRadio(); }
 
   async function restartRadio() {
     const clean = Boolean(cfg.clean_generated_on_restart);
@@ -1581,6 +1581,7 @@
 
   function updateReferenceAsrHint() {
     const backend = byId('referenceAsrBackend')?.value || 'faster-whisper';
+    const settingsBackend = document.querySelector('[name="reference_asr_backend"]')?.value || backend;
     const level = byId('referenceAsrLevel')?.value || 'balanced';
     const hints = {
       'faster-whisper': {
@@ -1603,6 +1604,19 @@
     const manual = backend === 'manual';
     if (byId('referenceAsrLevelWrap')) byId('referenceAsrLevelWrap').hidden = manual;
     if (byId('referenceManualText')) byId('referenceManualText').required = manual;
+    const whisperOnlyKeys = [
+      'reference_asr_model',
+      'reference_asr_compute_type',
+      'reference_asr_beam_size',
+      'reference_asr_review_enabled',
+      'reference_asr_review_model',
+      'reference_asr_review_device',
+      'reference_asr_review_compute_type',
+    ];
+    whisperOnlyKeys.forEach((key) => {
+      const wrapper = document.querySelector(`[name="${CSS.escape(key)}"]`)?.closest('.setting, .setting-bool');
+      if (wrapper) wrapper.hidden = settingsBackend !== 'faster-whisper';
+    });
   }
 
   async function loadModels() {
@@ -1789,6 +1803,7 @@
     byId('referenceUploadBtn')?.addEventListener('click', uploadReference);
     byId('referenceAsrBackend')?.addEventListener('change', updateReferenceAsrHint);
     byId('referenceAsrLevel')?.addEventListener('change', updateReferenceAsrHint);
+    document.querySelector('[name="reference_asr_backend"]')?.addEventListener('change', updateReferenceAsrHint);
     if (byId('referenceAsrBackend') && ['faster-whisper','gigaam'].includes(String(cfg.reference_asr_backend || ''))) byId('referenceAsrBackend').value = cfg.reference_asr_backend;
     if (byId('referenceAsrLevel') && ['fast','balanced','maximum'].includes(String(cfg.reference_asr_level || ''))) byId('referenceAsrLevel').value = cfg.reference_asr_level;
     updateReferenceAsrHint();

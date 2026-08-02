@@ -121,6 +121,14 @@ def normalize_omnivoice_nonverbal_tags(text: str, *, enabled: bool = True) -> st
     text = re.sub(r"(?<![\wА-Яа-яЁё])([А-ЯЁ][А-Яа-яЁёA-Za-z-]{1,32})\s*[:：]\s*[.!?]?\s*$", "", text).strip()
     text = re.sub(r"(?<![\wА-Яа-яЁё])([А-ЯЁ][А-Яа-яЁёA-Za-z-]{1,32})\s*[:：]\s*,\s*", r"\1: ", text)
     text = re.sub(r"\s+([,.!?])", r"\1", text)
+    # Models sometimes put the emotion between the speaker and the colon:
+    # ``Ирина [laughter]:``.  The dialogue parser then attributes that line to
+    # the previous speaker.  OmniVoice expects the tag after the colon too.
+    text = re.sub(
+        r"(?<![\wА-Яа-яЁё])([А-ЯЁA-Z][А-Яа-яЁёA-Za-z-]{1,31})\s*(\[[^\]\n]{1,40}\])\s*[:：]",
+        r"\1: \2",
+        text,
+    )
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -300,6 +308,33 @@ def normalize_generated_radio_text(text: str) -> str:
     ]
     for src, dst in replacements:
         text = text.replace(src, dst)
+    # Small local models occasionally copy the correct minute value but change
+    # the feminine number required by «минута/минуты».
+    minute_forms = {
+        "пятьдесят один": "пятьдесят одна",
+        "сорок один": "сорок одна",
+        "тридцать один": "тридцать одна",
+        "двадцать один": "двадцать одна",
+        "один": "одна",
+        "пятьдесят два": "пятьдесят две",
+        "сорок два": "сорок две",
+        "тридцать два": "тридцать две",
+        "двадцать два": "двадцать две",
+        "два": "две",
+    }
+    for wrong, correct in minute_forms.items():
+        text = re.sub(rf"(?i)\b{wrong}\s+минут(?:а|ы)\b", f"{correct} минуты" if correct.endswith("две") else f"{correct} минута", text)
+    # Small models also use an accusative form here: «пятьдесят одну
+    # минуту».  In a clock reading the nominative form is required.
+    accusative_minute_forms = {
+        "пятьдесят одну": "пятьдесят одна",
+        "сорок одну": "сорок одна",
+        "тридцать одну": "тридцать одна",
+        "двадцать одну": "двадцать одна",
+        "одну": "одна",
+    }
+    for wrong, correct in accusative_minute_forms.items():
+        text = re.sub(rf"(?i)\b{wrong}\s+минуту\b", f"{correct} минута", text)
     # Fix accidental missing space after English/artist names and Russian words: битAaron -> бит Aaron.
     text = re.sub(r'([А-Яа-яЁё])([A-Z][A-Za-z])', r'\1 \2', text)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -366,6 +401,14 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
             for bad_name in forbidden:
                 bad_re = re.escape(bad_name)
                 text = re.sub(rf"({name_re}\s*[:：])\s*(?:{bad_re}\s*[:：]\s*)+", r"\1 ", text)
+            # Markdown remnants and small-model punctuation occasionally yield
+            # «Максим:.реплика».  Keep labels consistent for the panel and TTS.
+            text = re.sub(rf"(?i)\b({name_re})\s*[:：]\s*[.]?\s*", r"\1: ", text)
+        allowed_markers = "|".join(re.escape(name) for name in allowed)
+        if text and not re.match(rf"^\s*(?:{allowed_markers})\s*[:：]", text, flags=re.IGNORECASE):
+            # Keep panel text and TTS segmentation consistent: otherwise the
+            # parser drops everything before the first labelled replica.
+            text = f"{allowed[0]}: {text}"
     prev = str(ctx.get("previous_track_name") or ctx.get("planned_previous_track") or "").lower()
     if not prev or "ничего" in prev or "ещё" in prev or "еще" in prev:
         text = re.sub(r"\b[Вв]\s+предыдущих\s+песнях[^.!?]*[.!?]", "", text)
@@ -397,7 +440,10 @@ def postprocess_host_text_for_air(text: str, ctx: Optional[Dict[str, Any]] = Non
             ("сейчас", "сейча́с"),
         ]
         for a, b in replacements:
-            text = re.sub(a, b, text, flags=re.IGNORECASE)
+            def preserve_case(match: re.Match[str], replacement: str = b) -> str:
+                return replacement[:1].upper() + replacement[1:] if match.group(0)[:1].isupper() else replacement
+
+            text = re.sub(a, preserve_case, text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return trim_to_complete_sentence(text) if text else text
 
@@ -421,6 +467,13 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
     """
     ctx = ctx or {}
     low = " ".join(str(text or "").lower().split())
+    # TTS stress marks are combining accents (for example, ``пого́да``).
+    # Strip them for factual guards so the generated pronunciation form cannot
+    # bypass checks written for ordinary Russian spelling.
+    # Remove only TTS stress marks.  NFD + removing every combining mark also
+    # turns Russian «й» into «и» and makes ordinary words such as
+    # «здравствуйте» impossible to match reliably.
+    folded = low.replace("\u0301", "").replace("ё", "е")
     out: List[str] = []
     hour = int(ctx.get("computer_hour", time.localtime().tm_hour) or 0)
     daypart = expected_daypart_for_hour(hour)
@@ -449,10 +502,41 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
     if ctx.get("intro_allowed") and (not prev or "ничего" in prev or "ещё" in prev or "еще" in prev):
         startup_bad = [
             r"\bтолько\s+что\s+звучал", r"\bтолько\s+что\s+слушал", r"\bмы\s+слушали\b",
-            r"\bперед\s+нами\s+было\b", r"\bпредыдущ", r"\bпосле\s+прошлого\s+трека\b",
+            r"\bперед\s+нами\s+было\b", r"\bпосле\s+прошлого\s+трека\b",
         ]
         if any(re.search(p, low, flags=re.IGNORECASE) for p in startup_bad):
             out.append("это старт эфира, предыдущих треков ещё не было")
+        if re.search(r"\bпосле\s+вчерашн\w+[^.!?]{0,80}\b(?:эфир|вечер|музык)\w*", folded, flags=re.IGNORECASE):
+            out.append("это старт подготовленного эфира; нельзя выдумывать вчерашнюю программу или музыку")
+    if not ctx.get("intro_allowed"):
+        repeated_greeting = (
+            r"\b(?:доброе\s+утро|добрый\s+день|добрый\s+вечер|доброй\s+ночи)\b|"
+            r"\b(?:волна\s+(?:эфэм|fm)|станци\w*)[^.!?]{0,60}\bприветству\w*|"
+            r"\b(?:добро\s+пожаловать|начинаем\s+эфир|открываем\s+эфир|с\s+вами\s+снова)\b|"
+            r"\b(?:рад|рада|рады)\s+(?:снова\s+)?приветствовать\b|"
+            r"\bприветству\w*\s+(?:всех\s+)?(?:слушател\w*|вас)\b|"
+            r"\bздравствуй(?:те)?\s*,?\s*(?:дорог\w*\s+|уважаем\w*\s+)?(?:слушател\w*|друзья)\b|"
+            r"\bвсем\s+привет\b|"
+            r"\b(?:начало|начинаем|начн[её]м)\s+(?:этого\s+|нового\s+)?дн\w*\b|"
+            r"\bготов\w*\s+(?:встречать\s+|к\s+)?нов\w+\s+дн\w*\b|"
+            r"\bнов\w+\s+день\s+(?:начин\w*|начал\w*|старт\w*)\b|"
+            r"\bстанци\w*[^.!?]{0,40}\bначинает\s+(?:свою\s+)?работу\b"
+        )
+        if re.search(repeated_greeting, folded, flags=re.IGNORECASE):
+            out.append("эфир уже идёт; нельзя повторно здороваться или заново приветствовать слушателей")
+        host_names = [
+            str(host.get("name") or "").strip()
+            for host in (ctx.get("hosts") or [])
+            if isinstance(host, dict) and str(host.get("name") or "").strip()
+        ]
+        if host_names:
+            host_markers = "|".join(re.escape(name) for name in host_names)
+            if re.search(
+                rf"(?<!\w)(?:{host_markers})\s*[:：]\s*привет\s+всем\b",
+                folded,
+                flags=re.IGNORECASE,
+            ):
+                out.append("эфир уже идёт; ведущий не должен начинать новый блок с повторного приветствия")
     roleplay_bad = ["кабина грузовика", "салон грузовика", "грузовик", "дальнобойщика", "дальнобоя", "рейс", "за рулем", "за рулём", "vr", "симулятор"]
     if any(x in low for x in roleplay_bad):
         out.append("это обычное музыкальное радио, без игровых и автомобильных ролевых образов")
@@ -461,6 +545,24 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
     weather_city = str(ctx.get("weather_city") or "").strip()
     if weather_city and not re.search(r"москв", weather_city, flags=re.IGNORECASE) and re.search(r"\bмоскв\w*", low, flags=re.IGNORECASE):
         out.append(f"город эфира и погоды — {weather_city}; Москву называть нельзя")
+    if not str(ctx.get("weather_text") or "").strip():
+        unverified_weather_patterns = [
+            r"\bпогод\w*",
+            r"\bтемператур\w*",
+            r"\b(?:плюс|минус)\s+\d{1,2}\s+градус",
+            r"\b\d{1,2}\s+градус(?:а|ов)?\b",
+            r"\b(?:на\s+улице|за\s+окном)\s+(?:тепл|холод|жарк|ясн|пасмур|солнеч|облач|ветрен|дожд|снеж|морозн)\w*",
+            r"\b(?:солнышк|солнц)\w*\s+(?:свет|выгля|вышл|поднял|сел|садит|зашл|проснул)\w*",
+            r"\b(?:солнышк|солнц)\w*[^.!?]{0,40}\b(?:проснул|встал|взош)\w*",
+            r"\b(?:идет|льет|начал|ожидает)\w*\s+(?:дожд|снег)\w*",
+            r"\b(?:дождлив|снежн|ветрен|солнечн|облачн|пасмурн|морозн)\w*",
+            r"\b(?:рассвет|закат)\w*",
+        ]
+        if any(re.search(pattern, folded, flags=re.IGNORECASE) for pattern in unverified_weather_patterns):
+            out.append(
+                "нет проверенных данных о погоде; нельзя упоминать погоду, температуру, "
+                "солнце, осадки, ветер, рассвет или закат"
+            )
     expected_horoscope = ctx.get("horoscope_expected") or []
     if expected_horoscope:
         if re.search(r"\bпрогноз\s+(?:был|будет)\s+(?:про|о)\b", low, flags=re.IGNORECASE):
@@ -469,6 +571,112 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
             sign = str(item.get("sign") or "").strip() if isinstance(item, dict) else ""
             if sign and not re.search(rf"(?<!\w){re.escape(sign)}\s*:", str(text or ""), flags=re.IGNORECASE):
                 out.append(f"в гороскопе отсутствует точная строка «{sign}: прогноз»")
+        expected_signs = {
+            str(item.get("sign") or "").strip().casefold()
+            for item in expected_horoscope
+            if isinstance(item, dict) and str(item.get("sign") or "").strip()
+        }
+        zodiac_forms = {
+            "овен": r"овен|овны",
+            "телец": r"телец|тельцы",
+            "близнецы": r"близнецы",
+            "рак": r"рак|раки",
+            "лев": r"лев|львы",
+            "дева": r"дева|девы",
+            "весы": r"весы",
+            "скорпион": r"скорпион|скорпионы",
+            "стрелец": r"стрелец|стрельцы",
+            "козерог": r"козерог|козероги",
+            "водолей": r"водолей|водолеи",
+            "рыбы": r"рыбы",
+        }
+        for canonical, forms in zodiac_forms.items():
+            if canonical not in expected_signs and re.search(rf"(?<!\w)(?:{forms})\s*:", folded, flags=re.IGNORECASE):
+                out.append(f"в этом блоке нет проверенного прогноза для знака «{canonical.capitalize()}»")
+        if re.search(
+            r"\bостальн\w*\s+знак\w*[^.!?]{0,50}\b(?:завтра|утром|вечером|ночью)\b",
+            folded,
+            flags=re.IGNORECASE,
+        ):
+            out.append("продолжение гороскопа можно обещать только в следующий выход, без выдуманного времени")
+    if ctx.get("riddle_question_block"):
+        answer_reveal_patterns = [
+            r"\bправильн\w*\s+ответ\w*(?:\s+на\s+[^.!?]{1,40})?\s*(?:[—–:=-]|это\b|является\b)",
+            r"\bответ\s+на\s+(?:нашу|эту|сегодняшн\w+)\s+загадк\w*\s*[—–:=-]",
+            r"\bответ(?:ом)?\s+(?:является|будет|это)\b",
+        ]
+        if any(re.search(pattern, folded, flags=re.IGNORECASE) for pattern in answer_reveal_patterns):
+            out.append("в блоке вопроса нельзя раскрывать или объявлять ответ на загадку")
+        delayed_daypart = (
+            r"\bответ\w*[^.!?]{0,80}\b(?:завтра|утром|вечером|ночью)\b|"
+            r"\b(?:до\s+встречи|встретимся)[^.!?]{0,30}\b(?:завтра|утром|вечером|ночью)\b"
+        )
+        if re.search(delayed_daypart, folded, flags=re.IGNORECASE):
+            out.append("ответ должен прозвучать в следующий выход ведущих, без обещаний утра, вечера или завтра")
+    if ctx.get("riddle_answer_block"):
+        if re.search(r"\bвчерашн\w*\s+загад", folded, flags=re.IGNORECASE):
+            out.append("ответ относится к предыдущему выходу ведущих, а не ко вчерашнему эфиру")
+        answer = str(ctx.get("riddle_correct_answer") or "").strip()
+        normalized_answer = answer.casefold().replace("\u0301", "").replace("ё", "е")
+        answer_variants = {normalized_answer}
+        answer_variants.add(re.sub(r"^(?:число|слово|буква)\s+", "", normalized_answer))
+        answer_variants.discard("")
+        if answer_variants and not any(
+            re.search(rf"(?<!\w){re.escape(variant)}(?!\w)", folded)
+            for variant in answer_variants
+        ):
+            out.append("в блоке ответа не прозвучал проверенный правильный ответ на загадку")
+        if not re.search(r"\b(?:ответ|разгадк)\w*\b", folded):
+            out.append("ответ на загадку нужно объявить явно, а не оставлять как догадку в разговоре")
+    wrong_correct = str(ctx.get("wrong_game_correct_answer") or "").strip()
+    if wrong_correct:
+        normalized_correct = wrong_correct.casefold().replace("\u0301", "").replace("ё", "е")
+        if normalized_correct and re.search(rf"(?<!\w){re.escape(normalized_correct)}(?!\w)", folded, flags=re.IGNORECASE):
+            out.append("в игре «ответь неправильно» прозвучал настоящий правильный ответ")
+    if ctx.get("force_guest"):
+        guest_name = str(ctx.get("guest_name") or "Гость").strip() or "Гость"
+        if not re.search(rf"(?<!\w){re.escape(guest_name)}\s*[:：]", str(text or ""), flags=re.IGNORECASE):
+            out.append(f"гость должен получить отдельную реплику с подписью «{guest_name}:»")
+        story_data = ctx.get("guest_story_data") or {}
+        if not isinstance(story_data, dict):
+            story_data = {}
+        story = str(story_data.get("story") or story_data.get("text") or "").strip()
+        if story:
+            generic_stems = {
+                "гость", "истори", "музык", "песня", "композ", "слушат", "радио",
+                "эфир", "настро", "расска", "хорош", "сегодн",
+            }
+
+            def distinctive_stems(value: str) -> set[str]:
+                tokens = re.findall(r"[а-яё]{6,}", value.casefold())
+                return {token[:6] for token in tokens if token[:6] not in generic_stems}
+
+            expected_story_stems = distinctive_stems(story)
+            configured_names = [
+                str(host.get("name") or "").strip()
+                for host in (ctx.get("hosts") or [])
+                if isinstance(host, dict) and str(host.get("name") or "").strip()
+            ]
+            if guest_name.casefold() not in {name.casefold() for name in configured_names}:
+                configured_names.append(guest_name)
+            speaker_markers = "|".join(re.escape(name) for name in configured_names)
+            guest_match = re.search(
+                rf"(?<!\w){re.escape(guest_name)}\s*[:：]\s*(.*?)(?=(?<!\w)(?:{speaker_markers})\s*[:：]|$)",
+                folded,
+                flags=re.IGNORECASE,
+            ) if speaker_markers else None
+            guest_spoken = guest_match.group(1) if guest_match else ""
+            spoken_story_stems = distinctive_stems(guest_spoken)
+            needed = min(len(expected_story_stems), max(2, (len(expected_story_stems) + 1) // 2))
+            if needed and len(expected_story_stems & spoken_story_stems) < needed:
+                out.append("реплика гостя не сохраняет проверенную историю из подготовленного пакета")
+            declared_name = re.search(
+                r"\bменя\s+зовут\s+([А-ЯЁ][А-Яа-яЁё-]{1,31})",
+                str(text or ""),
+                flags=re.IGNORECASE,
+            )
+            if declared_name and declared_name.group(1).casefold() not in story.casefold():
+                out.append("гость назвал вымышленное имя, которого нет в подготовленной истории")
     return out
 
 

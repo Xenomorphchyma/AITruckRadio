@@ -100,8 +100,8 @@ def build_compact_host_prompt(
 
     weather = str(ctx.get("weather_text") or "").strip()
     weather_city = str(ctx.get("weather_city") or "").strip()
-    if weather_city and weather_city.casefold() not in weather.casefold():
-        weather = f"{weather_city}; {weather}" if weather else weather_city
+    if weather and weather_city and weather_city.casefold() not in weather.casefold():
+        weather = f"{weather_city}; {weather}"
     entertainment = str(ctx.get("entertainment_text") or "").strip()
     horoscope_parts = []
     for item in ctx.get("horoscope_expected") or []:
@@ -163,21 +163,47 @@ def build_compact_host_prompt(
 
     dynamic_rules = []
     if intro:
-        dynamic_rules.append("На старте нельзя утверждать, что музыка уже звучала; подводи только к первому треку.")
+        dynamic_rules.append(
+            "На старте нельзя утверждать, что музыка уже звучала, и нельзя выдумывать вчерашний эфир; "
+            "подводи только к первому треку."
+        )
     else:
-        dynamic_rules.append("Не приветствуй станцию заново; следующий трек не называй уже прозвучавшим.")
+        dynamic_rules.append(
+            "Эфир уже идёт: не говори «доброе утро/добрый день/добрый вечер», «здравствуйте, слушатели», "
+            "«добро пожаловать», «начинаем эфир», «начало нового дня» или «готовы к новому дню» и не приветствуй станцию заново; "
+            "следующий трек не называй уже прозвучавшим."
+        )
     if weather:
         dynamic_rules.append("Погоду пересказывай только из строки «Погода», сохрани город и числа.")
+    else:
+        dynamic_rules.append(
+            "Проверенных данных о погоде НЕТ: не упоминай погоду, температуру, солнце, "
+            "осадки, облачность, ветер, рассвет или закат и не делай выводов о них по времени."
+        )
     entertainment_hint = f"{topic} {ctx.get('entertainment_instruction') or ''}".casefold()
-    if "загад" in entertainment_hint:
-        if "ответ" in entertainment_hint and "без ответа" not in entertainment_hint:
+    if ctx.get("riddle_answer_block"):
+        dynamic_rules.append(
+            "В блоке ответа сначала назови ответ и не задавай новую загадку. "
+            "Это загадка из предыдущего выхода ведущих, не называй её вчерашней."
+        )
+    elif ctx.get("riddle_question_block"):
+        dynamic_rules.append("Задай загадку без ответа; ответ будет в следующий выход, не обещай «завтра».")
+    elif "загад" in entertainment_hint:
+        # Legacy callers may not carry explicit rubric flags.  Prefer question
+        # mode unless the instruction clearly identifies a past riddle: the
+        # phrase «ответ прозвучит» belongs to a question and used to be
+        # misclassified as an answer block.
+        if "прошл" in entertainment_hint and "назови ответ" in entertainment_hint:
             dynamic_rules.append("В блоке ответа сначала назови ответ и не задавай новую загадку.")
         else:
             dynamic_rules.append("Задай загадку без ответа; ответ будет в следующий выход, не обещай «завтра».")
     if horoscope_parts:
         dynamic_rules.append("Внутри реплики сохрани метки знаков вида «Овен: прогноз» для каждого проверенного знака.")
     if "неправиль" in entertainment_hint or "неверн" in entertainment_hint:
-        dynamic_rules.append("Неверный игровой ответ явно обозначь как намеренно неверный, не как факт.")
+        dynamic_rules.append(
+            "Неверный игровой ответ явно обозначь как намеренно неверный, не как факт. "
+            "Настоящий правильный ответ из данных не произноси вообще, даже перед исправлением или шуткой."
+        )
     if ctx.get("allow_omnivoice_nonverbal_tags"):
         dynamic_rules.append(
             "Допустим максимум один тег после подписи: [laughter], [sigh], [confirmation-en], [question-en], "
@@ -185,7 +211,11 @@ def build_compact_host_prompt(
             "[surprise-wa], [surprise-yo], [dissatisfaction-hnn]."
         )
     if ctx.get("force_guest"):
-        dynamic_rules.append("Гость должен получить отдельную содержательную реплику с подписью «Гость:».")
+        dynamic_rules.append(
+            "Гость должен получить отдельную содержательную реплику с подписью «Гость:». "
+            "Гость пересказывает только подготовленную историю из поля «Рубрика»: не придумывай ему имя, "
+            "биографию, поездку, событие или другую историю."
+        )
     suffix_lines = [
         "[СХЕМА ОТВЕТА]",
         speaker_rule,
@@ -461,6 +491,11 @@ class LMStudioClient:
                 extra_lines.append(f"Точный час: {ctx['exact_time_text']}")
             if ctx.get("weather_text"):
                 extra_lines.append(f"Погода: {ctx['weather_text']}")
+            else:
+                extra_lines.append(
+                    "Проверенных данных о погоде нет. Не упоминай погоду, температуру, солнце, "
+                    "осадки, облачность, ветер, рассвет или закат."
+                )
             if ctx.get("weather_city"):
                 extra_lines.append(
                     f"Единственный город для погоды и местного контекста: {ctx['weather_city']}. "
@@ -494,9 +529,12 @@ class LMStudioClient:
                 extra_lines.append("Используй профили треков чаще: можно кратко обсудить настроение, факт, исполнителя или красивую подводку, но не перегружай эфир справкой.")
             extras = "\n".join(extra_lines) if extra_lines else "Дополнительных данных нет."
 
+            startup_context = (
+                "город и проверенная погода" if ctx.get("weather_text") else "город без догадок о погоде"
+            )
             continuity_rule = (
-                "Это первая стартовая речь сразу после запуска радио. Это типичное открытие станции: приветствие, название радио, кто ведёт эфир, текущее время, город и погода/температура/ветер, затем подводка только к первому следующему треку. "
-                "Предыдущих треков ещё не было вообще. Запрещено обсуждать музыку, которая якобы уже звучала."
+                f"Это первая стартовая речь сразу после запуска радио. Это типичное открытие станции: приветствие, название радио, кто ведёт эфир, текущее время, {startup_context}, затем подводка только к первому следующему треку. "
+                "Предыдущих треков ещё не было вообще. Запрещено обсуждать музыку, которая якобы уже звучала, или выдумывать вчерашнюю программу."
                 if intro_allowed else
                 "Эфир уже идёт. Не говори 'добро пожаловать', не начинай станцию заново, не здоровайся каждый раз. "
                 "Если обсуждаешь предыдущую песню, говори 'только что звучала/звучал', а не 'сегодня утром', 'ранее', 'давно', 'несколько часов назад'."
@@ -506,10 +544,11 @@ class LMStudioClient:
                 "Зимние образы в песне называй образами трека, а не реальностью за окном."
                 if self.cfg.get("season_reality_guard_enabled", True) else ""
             )
+            radio_topics = "температуре и погоде" if ctx.get("weather_text") else "городе и коротких человеческих наблюдениях"
             radio_rule = (
                 "Это обычное душевное музыкальное радио для слушателей, не ролевая трансляция и не сцена из игры. "
                 "Запрещены любые игровые и автомобильные ролевые образы: VR, игры, симуляторы, кабины, грузовики, рейсы, трассы, водители, дальнобойщики, фары, дорожные знаки и ситуация за рулём. "
-                "Говори только о музыке, настроении, времени, слушателях, городе, температуре, погоде и коротких человеческих наблюдениях."
+                f"Говори только о музыке, настроении, времени, слушателях, {radio_topics}."
             )
             recent = ctx.get("recent_host_texts") or []
             recent_text = "\n".join(f"- {x}" for x in recent[-5:]) if recent else "пока нет"
@@ -541,10 +580,15 @@ class LMStudioClient:
 
             station_name = str(ctx.get("station_name") or "Волна FM")
             style_name = str(ctx.get('style', 'радио'))
+            weather_rule = (
+                "Если говоришь о погоде, назови город, температуру в градусах и ветер/облачность строго из поля 'Погода'. Не превращай погоду в игровую или автомобильную сцену."
+                if ctx.get("weather_text") else
+                "Проверенных данных о погоде нет: запрещено упоминать погоду, температуру, солнце, осадки, облачность, ветер, рассвет или закат и делать выводы о них из времени."
+            )
             prompt = (
                 f"Формат: обычное музыкальное радио для всех слушателей. Название станции: {station_name}. Стиль: {style_name} — {ctx.get('style_prompt') or ''}\n"
                 f"{continuity_rule}\n{season_rule}\n{radio_rule}\n{track_specific_rule}\n{clock_rule}\n{creative_fact_rule}\n"
-                "Если говоришь о погоде, назови город, температуру в градусах и ветер/облачность из поля 'Погода'. Не превращай погоду в игровую или автомобильную сцену.\n"
+                f"{weather_rule}\n"
                 "Абсолютно запрещено в эфирном тексте: VR, игры, симуляторы, игровые бренды, кабины, грузовики, рейсы, трассы, водители, дальнобойщики, фары, дорожные знаки, штрафы, зеркала и ситуация за рулём.\n"
                 f"Номер вставки за запуск: {ctx.get('speech_blocks_played', 0) + 1}\n"
                 f"Сыграно треков за запуск: {ctx.get('tracks_played', 0)}\n"
@@ -552,7 +596,9 @@ class LMStudioClient:
                 + f"Следующий трек, который реально будет включён после речи: {next_name}\n"
                 f"{extras}\n\n"
                 f"Последние вставки, которые нельзя повторять по фразам и образам:\n{recent_text}\n\n"
-                + ("Структура стартовой речи: приветствие станции; представление ведущих; текущее время; город и погода с градусами; короткое настроение эфира; подводка только к первому треку.\n" if intro_allowed else "")
+                + (("Структура стартовой речи: приветствие станции; представление ведущих; текущее время; "
+                    + ("город и проверенная погода с градусами; " if ctx.get("weather_text") else "город без сведений о погоде; ")
+                    + "короткое настроение эфира; подводка только к первому треку.\n") if intro_allowed else "")
                 + f"Задача блока: {dj_instruction}\n"
                 f"Тема блока: {dj_topic_label}\n"
                 f"{host_rule}\n"

@@ -21,7 +21,7 @@
     "next": {"artist": "Алёна", "title": "Маяк"},
     "context": {"intro_allowed": false, "two_hosts": false, "hosts": [{"name": "Максим"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 19, "time_text": "19:20, понедельник, 13 июля 2026", "dj_length": "short", "dj_instruction": "Связка между треками.", "dj_topic_label": "музыка"},
     "raw_response": "Максим: Только что звучал «Тихий свет» — спокойный момент для этого вечера. Дальше в эфире «Маяк» Алёны.",
-    "expects": {"speaker_sequence": ["Максим"], "required_fragments": ["Тихий свет", "Маяк"], "forbidden_fragments": ["Добро пожаловать"], "max_chars": 500}
+    "expects": {"speaker_sequence": ["Максим"], "required_fragments": ["Тихий свет", "Маяк"], "forbidden_fragments": ["Добро пожаловать", "Доброе утро", "Добрый день", "Добрый вечер", "Доброй ночи"], "max_chars": 500}
   },
   {
     "id": "weather_news_listener_greeting",
@@ -51,7 +51,7 @@
     "id": "riddle",
     "previous": {"artist": "Алёна", "title": "Маяк"},
     "next": {"artist": "Север", "title": "Тихий свет"},
-    "context": {"intro_allowed": false, "two_hosts": false, "hosts": [{"name": "Максим"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 15, "time_text": "15:00, понедельник, 13 июля 2026", "entertainment_text": "Загадка: Что становится мокрее, пока сушит?", "entertainment_instruction": "Задать загадку без ответа.", "dj_length": "short", "dj_instruction": "Рубрика.", "dj_topic_label": "загадка"},
+    "context": {"intro_allowed": false, "two_hosts": false, "hosts": [{"name": "Максим"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 15, "time_text": "15:00, понедельник, 13 июля 2026", "entertainment_text": "Загадка: Что становится мокрее, пока сушит?", "entertainment_instruction": "Задать загадку без ответа.", "riddle_question_block": true, "riddle_question_text": "Что становится мокрее, пока сушит?", "riddle_correct_answer": "полотенце", "riddle_options": ["полотенце", "дождь", "море", "губка"], "dj_length": "short", "dj_instruction": "Рубрика.", "dj_topic_label": "загадка"},
     "raw_response": "Максим: Загадка для внимательных: что становится мокрее, пока сушит? Ответ оставим на следующий выход ведущих, а сейчас — музыка.",
     "expects": {"speaker_sequence": ["Максим"], "required_fragments": ["становится мокрее"], "forbidden_fragments": ["завтра", "полотенце"], "max_chars": 500}
   },
@@ -59,7 +59,7 @@
     "id": "wrong_answer_game",
     "previous": {"artist": "Север", "title": "Тихий свет"},
     "next": {"artist": "Алёна", "title": "Маяк"},
-    "context": {"intro_allowed": false, "two_hosts": true, "hosts": [{"name": "Максим"}, {"name": "Ирина"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 20, "time_text": "20:10, понедельник, 13 июля 2026", "entertainment_text": "Игра: на вопрос о столице Франции отвечаем заведомо неправильно.", "entertainment_instruction": "Дать смешной неверный ответ, не выдавая его за факт.", "dj_length": "short", "dj_instruction": "Игра.", "dj_topic_label": "игра"},
+    "context": {"intro_allowed": false, "two_hosts": true, "hosts": [{"name": "Максим"}, {"name": "Ирина"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 20, "time_text": "20:10, понедельник, 13 июля 2026", "entertainment_text": "Игра: на вопрос о столице Франции отвечаем заведомо неправильно.", "entertainment_instruction": "Дать смешной неверный ответ, не выдавая его за факт.", "wrong_game_question": "Какая столица Франции?", "wrong_game_correct_answer": "Париж", "wrong_game_wrong_examples": ["чайник на подоконнике", "Луна", "среда"], "dj_length": "short", "dj_instruction": "Игра.", "dj_topic_label": "игра"},
     "raw_response": "Максим: Играем в неправильные ответы: какая столица Франции?\nИрина: Конечно, чайник на подоконнике — и это нарочно неверный ответ.\nМаксим: А дальше включаем музыку.",
     "expects": {"speaker_sequence": ["Максим", "Ирина", "Максим"], "required_fragments": ["нарочно неверный"], "forbidden_facts": ["столица Франции — чайник"], "max_chars": 600}
   },
@@ -67,7 +67,7 @@
     "id": "guest",
     "previous": {"artist": "Алёна", "title": "Маяк"},
     "next": {"artist": "Север", "title": "Тихий свет"},
-    "context": {"intro_allowed": false, "two_hosts": true, "hosts": [{"name": "Максим"}, {"name": "Ирина"}, {"name": "Гость"}], "all_host_names": ["Максим", "Ирина", "Гость"], "force_guest": true, "computer_hour": 17, "time_text": "17:25, понедельник, 13 июля 2026", "dj_length": "medium", "dj_instruction": "Короткий звонок гостя.", "dj_topic_label": "гость"},
+    "context": {"intro_allowed": false, "two_hosts": true, "hosts": [{"name": "Максим"}, {"name": "Ирина"}, {"name": "Гость"}], "all_host_names": ["Максим", "Ирина", "Гость"], "force_guest": true, "guest_name": "Гость", "guest_story_data": {"story": "Спасибо за музыку, слушаю вас дома и улыбаюсь."}, "computer_hour": 17, "time_text": "17:25, понедельник, 13 июля 2026", "dj_length": "medium", "dj_instruction": "Короткий звонок гостя.", "dj_topic_label": "гость"},
     "raw_response": "Максим: К нам на минуту заглянул гость эфира.\nГость: Спасибо за музыку, слушаю вас дома и улыбаюсь.\nИрина: Спасибо за тёплые слова, а дальше — «Тихий свет».",
     "expects": {"speaker_sequence": ["Максим", "Гость", "Ирина"], "required_fragments": ["Спасибо за музыку", "Тихий свет"], "max_chars": 600}
   },

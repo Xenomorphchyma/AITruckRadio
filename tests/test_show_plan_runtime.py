@@ -7,6 +7,7 @@ import unittest
 import urllib.parse
 from http.server import HTTPServer
 from pathlib import Path
+from unittest.mock import Mock
 
 from ai_truck_radio_app.config import DEFAULT_CONFIG
 from ai_truck_radio_app.engine import RadioEngine
@@ -182,6 +183,67 @@ class ShowPlanRuntimeTests(unittest.TestCase):
         stopped, _message = engine.stop_omnivoice_service()
         self.assertTrue(stopped)
         self.assertEqual("stopped", engine._tts_runtime_status()["tts_status"])
+
+    def test_background_plan_generation_does_not_replace_now_playing(self):
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.cfg = {"show_plan_duration_minutes": 1}
+        engine.show_plan_last_generation_sec = 0
+        engine.show_plan_status = ""
+        engine.show_plan_progress = {}
+        engine.tracks = []
+        engine.set_now = Mock()
+        engine.is_running = lambda: True
+        engine.pop_next_track = lambda: None
+
+        self.assertEqual([], engine._build_preplanned_show_locked())
+        engine.set_now.assert_not_called()
+
+    def test_plan_skip_is_consumed_after_one_item(self):
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.cfg = {
+            "show_plan_enabled": True,
+            "show_plan_rebuild_on_start": False,
+            "show_plan_prepare_next_threshold_minutes": 0,
+            "show_plan_prepare_next_fraction": 0.9,
+            "show_plan_prepare_next_threshold_items": 0,
+            "speech_takeover_enabled": False,
+            "show_plan_continuous_extend": False,
+            "show_plan_live_after_exhausted": False,
+        }
+        engine.plan_lock = threading.Lock()
+        engine.state_lock = threading.Lock()
+        engine.stop_event = threading.Event()
+        engine.skip_event = threading.Event()
+        engine.show_plan_last_generation_sec = 0
+        engine.show_plan_status = "готов"
+        engine.show_plan_index = 0
+        engine.show_plan_active_index = -1
+        engine.next_show_plan = []
+        engine.plan_prepare_thread = None
+        engine.pending_music_speech_transition = None
+        engine.tracks_played = 0
+        engine.show_plan = [
+            PlannedItem("music", Path("first.mp3"), "Первый", "", 120),
+            PlannedItem("music", Path("second.mp3"), "Второй", "", 120),
+        ]
+        played = []
+
+        def stream(path, _kind, *, limit_sec=None):
+            played.append((path.name, engine.skip_event.is_set(), limit_sec))
+            if path.name == "first.mp3":
+                engine.skip_event.set()
+            return False
+
+        engine._stream_path_plain_to_broadcast = stream
+        engine._start_prepare_next_show_plan = lambda: None
+        engine._transition_pause = lambda: None
+        engine._save_current_show_plan = lambda: None
+        engine.set_now = lambda *_args: None
+
+        engine._air_preplanned_show()
+
+        self.assertEqual(["first.mp3", "second.mp3"], [item[0] for item in played])
+        self.assertFalse(played[1][1], "skip leaked into the next planned item")
 
 
 class _ApiEngine:

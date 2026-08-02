@@ -106,6 +106,79 @@ def test_compact_prompt_is_materially_smaller_than_legacy_prompt() -> None:
     assert len(compact_prompt) < len(legacy_prompt) * 0.5
 
 
+def test_compact_prompt_forbids_weather_when_only_city_is_configured() -> None:
+    ctx = _large_context()
+    ctx["weather_text"] = ""
+    client = FakeLMStudioClient(["Максим: В студии хорошее настроение."], {"lm_compact_host_prompt": True})
+    client.generate_host_line(None, make_track({"artist": "Север", "title": "Тихий свет"}, label="next"), ctx)
+    prompt = _post_payload(client)["messages"][1]["content"]
+
+    assert "Проверенных данных о погоде НЕТ" in prompt
+    assert "Погода: Хабаровск" not in prompt
+    assert "не делай выводов о них по времени" in prompt
+
+
+def test_explicit_riddle_question_flag_never_turns_into_answer_mode() -> None:
+    ctx = _large_context()
+    ctx.update({
+        "riddle_question_block": True,
+        "entertainment_instruction": "Задай загадку; ответ прозвучит в следующий выход ведущих.",
+    })
+    client = FakeLMStudioClient(["Максим: Загадка."], {"lm_compact_host_prompt": True})
+    client.generate_host_line(None, make_track({"artist": "Север", "title": "Свет"}, label="next"), ctx)
+    prompt = _post_payload(client)["messages"][1]["content"]
+
+    assert "Задай загадку без ответа" in prompt
+    assert "В блоке ответа сначала назови ответ" not in prompt
+
+
+def test_explicit_riddle_answer_flag_uses_answer_mode() -> None:
+    ctx = _large_context()
+    ctx.update({
+        "riddle_answer_block": True,
+        "entertainment_instruction": "Назови ответ на прошлую загадку.",
+    })
+    client = FakeLMStudioClient(["Максим: Ответ — время."], {"lm_compact_host_prompt": True})
+    client.generate_host_line(None, make_track({"artist": "Север", "title": "Свет"}, label="next"), ctx)
+    prompt = _post_payload(client)["messages"][1]["content"]
+
+    assert "В блоке ответа сначала назови ответ" in prompt
+    assert "не называй её вчерашней" in prompt
+
+
+def test_wrong_answer_prompt_forbids_saying_the_real_answer() -> None:
+    ctx = _large_context()
+    ctx.update({
+        "wrong_game_question": "Какого цвета огурец?",
+        "wrong_game_correct_answer": "зелёный",
+        "entertainment_instruction": "Ответь намеренно неправильно.",
+        "dj_topic_label": "игра «ответь неправильно»",
+    })
+    client = FakeLMStudioClient(["Ирина: Фиолетовый."], {"lm_compact_host_prompt": True})
+    client.generate_host_line(None, make_track({"artist": "Север", "title": "Свет"}, label="next"), ctx)
+    prompt = _post_payload(client)["messages"][1]["content"]
+
+    assert "Настоящий правильный ответ" in prompt
+    assert "не произноси вообще" in prompt
+
+
+def test_guest_prompt_forbids_inventing_another_story_or_name() -> None:
+    ctx = _large_context()
+    ctx.update({
+        "force_guest": True,
+        "guest_name": "Гость",
+        "guest_story_data": {"story": "Гость проснулся от припева любимой песни."},
+        "entertainment_text": "Гость проснулся от припева любимой песни.",
+    })
+    ctx["hosts"] = [{"name": "Максим"}, {"name": "Ирина"}, {"name": "Гость"}]
+    client = FakeLMStudioClient(["Гость: История."], {"lm_compact_host_prompt": True})
+    client.generate_host_line(None, make_track({"artist": "Север", "title": "Свет"}, label="next"), ctx)
+    prompt = _post_payload(client)["messages"][1]["content"]
+
+    assert "не придумывай ему имя" in prompt
+    assert "другую историю" in prompt
+
+
 def test_structured_plain_text_schema_is_unchanged_by_host_prompt_compaction() -> None:
     schema = {
         "type": "object",

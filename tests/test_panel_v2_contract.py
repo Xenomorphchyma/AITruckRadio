@@ -128,6 +128,11 @@ def test_plan_and_player_controls_have_real_state_and_accessibility_contracts() 
     assert "GigaAM — для русской речи" in page
     assert "Максимальная точность" in page
     assert "Без распознавания — мой текст" in page
+    assert "whisperOnlyKeys" in page
+    assert "wrapper.hidden = settingsBackend !== 'faster-whisper'" in page
+    assert "[name=\"reference_asr_backend\"]')?.addEventListener('change', updateReferenceAsrHint)" in page
+    assert "starting ? 'Отменить запуск'" in page
+    assert "status.radio_running || status.radio_starting" in page
     assert ".player-controls #playBtn .bi-play-fill { transform: translateX(2px); }" in page
 
 
