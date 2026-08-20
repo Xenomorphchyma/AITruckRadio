@@ -46,13 +46,11 @@ beds/*
 jingles/*
 !jingles/README_JINGLES_RU.md
 station_ids/*
-!station_ids/README_RU.txt
-!station_ids/README_STATION_IDS_RU.md
+!station_ids/README.md
 
 # Voice/reference assets are local and may be large/private
 references/*
-!references/README_REFERENCE_RU.md
-!references/README_REFERENCE_RU.txt
+!references/README.md
 !references/put_reference_voices_here.txt
 voices/*
 !voices/put_piper_voice_here.txt
