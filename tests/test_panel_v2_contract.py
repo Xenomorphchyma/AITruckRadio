@@ -134,6 +134,7 @@ def test_plan_and_player_controls_have_real_state_and_accessibility_contracts() 
     assert "starting ? 'Отменить запуск'" in page
     assert "status.radio_running || status.radio_starting" in page
     assert ".player-controls #playBtn .bi-play-fill { transform: translateX(2px); }" in page
+    assert ".inspector-main { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;" in page
 
 
 def test_mobile_settings_and_readiness_remain_responsive() -> None:
@@ -188,4 +189,16 @@ def test_news_section_renders_review_flow_sources_and_responsive_states() -> Non
     assert "newsStateMarkup('loading'" in page
     assert "newsStateMarkup('error'" in page
     assert "newsStateMarkup('empty'" in page
+    assert "status.news_refreshing" in page
+    assert "Обновляю ленту…" in page
+    assert "if (!loading) setText('newsFeedStatus'" in page
     assert ".news-feed { grid-template-columns: 1fr; }" in page
+
+
+def test_long_track_profile_refresh_can_be_cancelled_from_panel() -> None:
+    page = _render()
+
+    assert "/api/track_profiles/cancel" in page
+    assert "status.track_profile_building" in page
+    assert "status.track_profile_cancel_requested" in page
+    assert "Отменить обновление" in page

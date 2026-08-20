@@ -198,6 +198,60 @@ class ShowPlanRuntimeTests(unittest.TestCase):
         self.assertEqual([], engine._build_preplanned_show_locked())
         engine.set_now.assert_not_called()
 
+    def test_startup_stage_is_visible_in_public_now_playing_state(self):
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.state_lock = threading.RLock()
+        engine.now_playing = "Эфир запускается"
+        engine.current_kind = "startup"
+        engine.current_started_ts = 0.0
+
+        engine._set_startup_stage("Собираю и проверяю новости")
+
+        self.assertEqual("Собираю и проверяю новости", engine.now_playing)
+        self.assertEqual("startup", engine.current_kind)
+        self.assertGreater(engine.current_started_ts, 0)
+
+    def test_track_profile_build_can_be_cancelled(self):
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.track_profile_cancel_event = threading.Event()
+        engine.track_profile_status = "описания музыки: 1/6"
+        engine.track_profile_progress = {"current": 1, "total": 6, "percent": 16, "detail": "трек"}
+        engine.track_profile_thread = type("Thread", (), {"is_alive": lambda _self: True})()
+
+        class Process:
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+        process = Process()
+        engine.track_profile_process = process
+
+        self.assertTrue(engine.cancel_track_profiles_build())
+        self.assertTrue(engine.track_profile_cancel_event.is_set())
+        self.assertTrue(process.terminated)
+        self.assertIn("останавливаю", engine.track_profile_status)
+        self.assertEqual("остановка анализатора", engine.track_profile_progress["detail"])
+
+    def test_cached_news_status_never_calls_review_items_verified(self):
+        pack = {
+            "fallback_used": True,
+            "items": [
+                {"status": "review"},
+                {"status": "review"},
+                {"status": "verified"},
+            ],
+        }
+
+        status = RadioEngine._news_pack_status(pack, cached=True)
+
+        self.assertIn("1 проверено", status)
+        self.assertIn("2 требуют внимания", status)
+        self.assertIn("используется файл", status)
+
     def test_plan_skip_is_consumed_after_one_item(self):
         engine = RadioEngine.__new__(RadioEngine)
         engine.cfg = {

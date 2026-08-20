@@ -35,7 +35,7 @@
   let pointerDragActive = false;
   let dragPointerOffsetX = 0;
   let dragPointerOffsetY = 0;
-  let lmRuntime = {reachable: null, models: []};
+  let lmRuntime = {reachable: null, models: [], loadedModels: []};
   let omnivoiceServicePending = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -88,7 +88,7 @@
       {title: 'Безопасность текста', icon: 'shield-check', keys: ['max_host_text_chars','tts_parse_validation_enabled','tts_parse_validation_min_ratio','host_should_use_stress_marks']},
     ],
     lm: [
-      {title: 'Генерация текста', icon: 'cpu', open: true, keys: ['lm_enabled','lm_model','lm_temperature','lm_max_tokens','lm_timeout_sec','lm_append_no_think','lm_compact_host_prompt','lm_host_prompt_max_chars']},
+      {title: 'Генерация текста', icon: 'cpu', open: true, keys: ['lm_enabled','lm_model','lm_temperature','lm_max_tokens','lm_timeout_sec','lm_reasoning_effort','lm_append_no_think','lm_compact_host_prompt','lm_host_prompt_max_chars']},
       {title: 'Ограничения ведущих', icon: 'shield-check', keys: ['host_creative_fact_mode','host_strict_clock_guard','tts_parse_validation_enabled','tts_parse_validation_min_ratio']},
     ],
     system: [
@@ -964,12 +964,15 @@
     const pack = newsPack();
     const statusText = newsStatusText();
     const loweredStatus = statusText.toLowerCase();
-    const loading = newsRefreshPending || ['обнов', 'загруз', 'подготов', 'refresh', 'loading', 'running', 'in_progress'].some((prefix) => loweredStatus.startsWith(prefix));
+    const loading = newsRefreshPending || Boolean(status.news_refreshing) || ['обнов', 'загруз', 'подготов', 'собира', 'refresh', 'loading', 'running', 'in_progress'].some((prefix) => loweredStatus.startsWith(prefix));
     const backendError = /ошиб|error|fail|недоступ/.test(loweredStatus) ? statusText : '';
     const error = newsUiError || backendError;
-    refreshButton.disabled = newsRefreshPending;
+    if (!loading) setText('newsFeedStatus', error ? `Ошибка обновления: ${error}` : statusText);
+    refreshButton.disabled = loading;
     const refreshIcon = $('.bi', refreshButton);
-    refreshIcon?.classList.toggle('news-spinner', newsRefreshPending);
+    refreshIcon?.classList.toggle('news-spinner', loading);
+    const refreshLabel = $('span', refreshButton);
+    if (refreshLabel) refreshLabel.textContent = loading ? 'Обновляю ленту…' : 'Обновить ленту';
     feed.setAttribute('aria-busy', String(loading));
     setText('newsPackBadge', `${items.length} ${items.length === 1 ? 'материал' : (items.length >= 2 && items.length <= 4 ? 'материала' : 'материалов')}`);
     const freshness = pack.created_at ? `Обновлено ${newsRelativeTime(pack.created_at)}${newsExpiryLabel(pack.expires_at) ? ` · актуально ${newsExpiryLabel(pack.expires_at)}` : ''}` : 'Лента ещё не загружена';
@@ -1007,9 +1010,9 @@
     renderNewsFeed();
     setText('newsFeedStatus', 'Обновляю новостную ленту.');
     try {
-      await postForm('/api/news/refresh');
+      const result = await postForm('/api/news/refresh');
       await refreshStatus();
-      say('Обновление новостей запущено');
+      say(result.started ? 'Обновление новостей запущено' : 'Новости уже обновляются');
     } catch (error) {
       newsUiError = error.message;
       setText('newsFeedStatus', `Ошибка обновления: ${error.message}`);
@@ -1054,7 +1057,7 @@
     }
     if (lm && cfg.lm_enabled !== false) {
       if (lmRuntime.reachable === false) problems.push('LM Studio не запущена или недоступна');
-      else if (lmRuntime.reachable === true && !lmRuntime.models.length) problems.push('в LM Studio не загружена ни одна модель');
+      else if (lmRuntime.reachable === true && !lmRuntime.loadedModels.length) problems.push('в LM Studio не загружена ни одна модель');
     }
     return problems.join('; ');
   }
@@ -1162,6 +1165,17 @@
     setText('trackProfileStatus', status.track_profile_status || 'ожидание');
     byId('trackProfileFill').style.width = `${trackPercent}%`;
     setText('trackProfileDetail', track.detail || '');
+    const trackButton = byId('buildProfilesBtn');
+    if (trackButton) {
+      const building = Boolean(status.track_profile_building);
+      const cancellingTrack = Boolean(status.track_profile_cancel_requested);
+      trackButton.disabled = cancellingTrack;
+      trackButton.classList.toggle('danger-subtle', building);
+      const label = $('span', trackButton);
+      if (label) label.textContent = building ? (cancellingTrack ? 'Останавливаю…' : 'Отменить обновление') : 'Обновить описания';
+      const icon = $('.bi', trackButton);
+      if (icon) icon.className = `bi ${building ? (cancellingTrack ? 'bi-arrow-repeat news-spinner' : 'bi-x-circle') : 'bi-stars'}`;
+    }
     setText('entertainmentStatus', status.entertainment_status || 'ожидание');
   }
 
@@ -1314,6 +1328,16 @@
   }
 
   async function buildProfiles() {
+    if (status.track_profile_building) {
+      try {
+        const result = await postForm('/api/track_profiles/cancel');
+        say(result.cancelled ? 'Останавливаю обновление описаний…' : 'Обновление уже завершилось');
+        await refreshStatus();
+      } catch (error) {
+        say(`Не удалось отменить обновление: ${error.message}`, 'error');
+      }
+      return;
+    }
     const force = Boolean(document.querySelector('[name="track_profiles_force_rebuild_existing"]')?.checked);
     try { const result = await postForm('/api/track_profiles/build', {force_existing: force}); say(result.started ? 'Обновление описаний запущено' : 'Описания уже обновляются'); await refreshStatus(); }
     catch (error) { say(`Не удалось обновить описания: ${error.message}`, 'error'); }
@@ -1624,8 +1648,9 @@
     try {
       const result = await requestJson(`/api/models?ts=${Date.now()}`);
       const models = Array.isArray(result.models) ? result.models : [];
+      const loadedModels = Array.isArray(result.loaded_models) ? result.loaded_models : models;
       const reachable = result.reachable !== false;
-      lmRuntime = {reachable, models};
+      lmRuntime = {reachable, models, loadedModels};
       ['lm_model','track_analyzer_model','entertainment_model'].forEach((key) => {
         const field = document.querySelector(`[name="${key}"]`);
         if (!field) return;
@@ -1643,11 +1668,13 @@
       });
       health.textContent = !reachable
         ? 'LM Studio не запущена или недоступна. Запустите сервер в LM Studio и повторите проверку.'
-        : (models.length ? `LM Studio готова. Загружено моделей: ${models.length}.` : 'LM Studio запущена, но ни одна модель не загружена.');
-      health.className = `model-health ${reachable && models.length ? 'ok' : 'bad'}`;
+        : (loadedModels.length
+          ? `LM Studio готова. Загружено: ${loadedModels.join(', ')}. В каталоге: ${models.length}.`
+          : `LM Studio запущена, но ни одна модель не загружена. В каталоге: ${models.length}.`);
+      health.className = `model-health ${reachable && loadedModels.length ? 'ok' : 'bad'}`;
       updateRuntimeWarnings();
     } catch (error) {
-      lmRuntime = {reachable: false, models: []};
+      lmRuntime = {reachable: false, models: [], loadedModels: []};
       health.textContent = `LM Studio недоступна: ${error.message}`;
       health.className = 'model-health bad';
       updateRuntimeWarnings();

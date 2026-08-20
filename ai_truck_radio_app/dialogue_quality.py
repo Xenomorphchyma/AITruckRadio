@@ -180,6 +180,12 @@ def _normalized(value: Any) -> str:
 
 def _unknown_speaker_labels(text: str, hosts: Sequence[Dict[str, Any]], ctx: Dict[str, Any], contract: Dict[str, Any]) -> List[str]:
     allowed: set[str] = set()
+    allowed.update({
+        _normalized("Вопрос"),
+        _normalized("Варианты"),
+        _normalized("Варианты ответа"),
+        _normalized("Правильный ответ"),
+    })
     for host in hosts:
         allowed.add(_normalized(host.get("name")))
         aliases = host.get("aliases") or []

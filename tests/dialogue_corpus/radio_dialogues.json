@@ -52,8 +52,8 @@
     "previous": {"artist": "Алёна", "title": "Маяк"},
     "next": {"artist": "Север", "title": "Тихий свет"},
     "context": {"intro_allowed": false, "two_hosts": false, "hosts": [{"name": "Максим"}], "all_host_names": ["Максим", "Ирина"], "computer_hour": 15, "time_text": "15:00, понедельник, 13 июля 2026", "entertainment_text": "Загадка: Что становится мокрее, пока сушит?", "entertainment_instruction": "Задать загадку без ответа.", "riddle_question_block": true, "riddle_question_text": "Что становится мокрее, пока сушит?", "riddle_correct_answer": "полотенце", "riddle_options": ["полотенце", "дождь", "море", "губка"], "dj_length": "short", "dj_instruction": "Рубрика.", "dj_topic_label": "загадка"},
-    "raw_response": "Максим: Загадка для внимательных: что становится мокрее, пока сушит? Ответ оставим на следующий выход ведущих, а сейчас — музыка.",
-    "expects": {"speaker_sequence": ["Максим"], "required_fragments": ["становится мокрее"], "forbidden_fragments": ["завтра", "полотенце"], "max_chars": 500}
+    "raw_response": "Максим: Загадка для внимательных: что становится мокрее, пока сушит? Варианты: полотенце, дождь, море или губка. Ответ оставим на следующий выход ведущих, а сейчас — музыка.",
+    "expects": {"speaker_sequence": ["Максим"], "required_fragments": ["становится мокрее"], "forbidden_fragments": ["завтра"], "max_chars": 500}
   },
   {
     "id": "wrong_answer_game",

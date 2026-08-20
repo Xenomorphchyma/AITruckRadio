@@ -258,9 +258,11 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 probe = engine.lm.probe_models() if hasattr(engine.lm, "probe_models") else {
                     "reachable": True,
                     "models": engine.lm.list_models(),
+                    "catalog_models": engine.lm.list_models(),
                     "error": "",
                 }
-                models = list(probe.get("models") or [])
+                loaded_models = list(probe.get("models") or [])
+                models = list(probe.get("catalog_models") or loaded_models)
                 configured = {
                     "lm_model": str(engine.cfg.get("lm_model") or "local-model"),
                     "track_analyzer_model": str(engine.cfg.get("track_analyzer_model") or "local-model"),
@@ -268,12 +270,13 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 }
                 self.send_json({
                     "models": models,
+                    "loaded_models": loaded_models,
                     "reachable": bool(probe.get("reachable")),
                     "error": str(probe.get("error") or ""),
-                    "used": engine.lm.pick_model() if models else str(engine.cfg.get("lm_model") or "local-model"),
+                    "used": engine.lm.pick_model() if loaded_models else str(engine.cfg.get("lm_model") or "local-model"),
                     "configured": configured,
                     "available": {
-                        key: bool(value == "local-model" and models or value in models)
+                        key: bool(value == "local-model" and loaded_models or value in loaded_models)
                         for key, value in configured.items()
                     },
                 })
@@ -457,6 +460,9 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 save_json(CONFIG_PATH, engine.cfg)
                 ok = engine.start_track_profiles_build(limit, force_existing=force_existing)
                 self.send_json({"ok": True, "started": ok, "status": engine.track_profile_status, "force_existing": force_existing})
+            elif path == "/api/track_profiles/cancel":
+                cancelled = engine.cancel_track_profiles_build()
+                self.send_json({"ok": True, "cancelled": cancelled, "status": engine.track_profile_status})
             elif path == "/api/show_plan/generate":
                 form = parse_post(self)
                 minutes = None
@@ -627,7 +633,7 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                     checkbox_keys = [k for k in checkbox_keys_all if k in form]
                 for key in checkbox_keys:
                     updates[key] = bool_from_form(form.get(key))
-                for key in ["music_dir", "ffmpeg_path", "lm_model", "track_analyzer_model", "entertainment_model", "tts_backend", "dj_talk_profile", "dj_topic_mode", "qwen3_tts_model_id", "qwen3_tts_instruct", "weather_provider", "qwen3_tts_device_map", "qwen3_tts_dtype", "lmstudio_tts_base_url", "lmstudio_tts_model", "lmstudio_tts_voice", "lmstudio_tts_response_format", "omnivoice_model", "omnivoice_device", "omnivoice_mode", "omnivoice_pronunciation_file", "omnivoice_python", "omnivoice_hf_home", "jingle_dir", "speech_bed_dir", "track_profiles_file", "track_profiles_fact_mode", "track_profiles_research_mode", "track_profiles_web_lookup_provider", "track_profiles_wikipedia_languages", "speech_bed_mode", "listener_greetings_file", "show_plan_output_file", "station_id_dir", "entertainment_integration_mode", "horoscope_source_mode", "riddle_source_mode", "guest_name", "guest_role", "guest_voice_mode", "guest_voice_instruct", "guest_ref_audio", "guest_ref_text", "host_favorite_names", "reference_asr_backend", "reference_asr_model", "reference_asr_device", "reference_asr_compute_type", "reference_asr_cache_dir", "reference_asr_language", "reference_asr_review_model", "reference_asr_review_device", "reference_asr_review_compute_type"]:
+                for key in ["music_dir", "ffmpeg_path", "lm_model", "lm_reasoning_effort", "track_analyzer_model", "entertainment_model", "tts_backend", "dj_talk_profile", "dj_topic_mode", "qwen3_tts_model_id", "qwen3_tts_instruct", "weather_provider", "qwen3_tts_device_map", "qwen3_tts_dtype", "lmstudio_tts_base_url", "lmstudio_tts_model", "lmstudio_tts_voice", "lmstudio_tts_response_format", "omnivoice_model", "omnivoice_device", "omnivoice_mode", "omnivoice_pronunciation_file", "omnivoice_python", "omnivoice_hf_home", "jingle_dir", "speech_bed_dir", "track_profiles_file", "track_profiles_fact_mode", "track_profiles_research_mode", "track_profiles_web_lookup_provider", "track_profiles_wikipedia_languages", "speech_bed_mode", "listener_greetings_file", "show_plan_output_file", "station_id_dir", "entertainment_integration_mode", "horoscope_source_mode", "riddle_source_mode", "guest_name", "guest_role", "guest_voice_mode", "guest_voice_instruct", "guest_ref_audio", "guest_ref_text", "host_favorite_names", "reference_asr_backend", "reference_asr_model", "reference_asr_device", "reference_asr_compute_type", "reference_asr_cache_dir", "reference_asr_language", "reference_asr_review_model", "reference_asr_review_device", "reference_asr_review_compute_type"]:
                     if key in form:
                         updates[key] = form[key].strip()
                 if "reference_asr_level" in form:

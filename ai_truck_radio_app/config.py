@@ -55,6 +55,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "lm_max_tokens": 760,
     "lm_timeout_sec": 90,
     "lm_append_no_think": False,  # False = разрешаем Thinking в LM Studio, если он включён в модели
+    "lm_reasoning_effort": "auto",  # auto | none | low | medium | high
     "lm_compact_host_prompt": True,
     "lm_host_system_max_chars": 900,
     "lm_host_prompt_max_chars": 4800,

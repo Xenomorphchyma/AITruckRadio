@@ -158,6 +158,8 @@ class RadioEngine:
         self._prepare_generation = 0
         self._startup_in_progress = False
         self.track_profile_thread: Optional[threading.Thread] = None
+        self.track_profile_process: Optional[subprocess.Popen[str]] = None
+        self.track_profile_cancel_event = threading.Event()
         self.track_profile_status = "профили треков не обновлялись"
         self.track_profile_progress: Dict[str, Any] = {"current": 0, "total": 0, "percent": 0, "detail": ""}
         self.show_plan_progress: Dict[str, Any] = {"current": 0, "total": 0, "percent": 0, "detail": ""}
@@ -187,7 +189,7 @@ class RadioEngine:
         cached_news = self.news_agent.load_cache() if self.cfg.get("news_agent_enabled", True) else None
         if cached_news:
             self.news_pack = cached_news
-            self.news_status = "загружена сохранённая проверенная лента"
+            self.news_status = self._news_pack_status(cached_news, cached=True)
 
         self.stop_event = threading.Event()
         self.skip_event = threading.Event()
@@ -243,6 +245,13 @@ class RadioEngine:
             self.startup_thread = thread
         thread.start()
         return True
+
+    def _set_startup_stage(self, message: str) -> None:
+        """Expose long pre-air work instead of looking like a frozen start."""
+        with self.state_lock:
+            self.now_playing = message
+            self.current_kind = "startup"
+            self.current_started_ts = time.time()
 
     def cleanup_generated_radio_files(self) -> Dict[str, int]:
         """Delete generated speech/planned-show leftovers, but keep user assets and track profiles."""
@@ -377,6 +386,7 @@ class RadioEngine:
         if ready_preplanned_show:
             log("Готовый план уже озвучен — пропускаю повторный прогрев OmniVoice и подготовку контента перед стартом")
         else:
+            self._set_startup_stage("Запускаю синтезатор речи")
             try:
                 self.tts.prewarm_omnivoice_worker(self.cfg.get("hosts") or [])
             except Exception as e:
@@ -387,6 +397,7 @@ class RadioEngine:
         prepare_guest = bool(self.cfg.get("guest_enabled", False) and self.cfg.get("guest_generate_before_radio", True))
         prepare_rubrics = bool(self.cfg.get("horoscope_generate_before_radio", True))
         if (not ready_preplanned_show) and self.cfg.get("entertainment_enabled", False) and (prepare_rubrics or prepare_guest):
+            self._set_startup_stage("Готовлю рубрики перед эфиром")
             try:
                 self.prepare_entertainment_pack("radio_start")
                 log("Рубрики перед эфиром готовы: " + self.entertainment_status)
@@ -402,10 +413,12 @@ class RadioEngine:
             and self.cfg.get("news_agent_enabled", True)
             and self.cfg.get("news_agent_generate_before_radio", True)
         ):
+            self._set_startup_stage("Собираю и проверяю новости")
             self.prepare_news_pack("radio_start")
         if self.startup_cancel_event.is_set() or self._run_generation != run_generation:
             log("Запуск радио отменён во время подготовки новостей")
             return
+        self._set_startup_stage("Запускаю аудиопоток")
         self.stop_event.clear()
         self.skip_event.clear()
         self._reset_runtime_state_for_new_air()
@@ -422,6 +435,7 @@ class RadioEngine:
             self._prepare_generation += 1
             self._startup_in_progress = False
         self.startup_cancel_event.set()
+        self.cancel_track_profiles_build()
         self.stop_event.set()
         self.skip_event.set()
         self._broadcast(None)
@@ -811,6 +825,17 @@ class RadioEngine:
             ref_text = BASE_DIR / ref_text
         return {'audio': str(ref_audio), 'audio_exists': ref_audio.exists(), 'text': str(ref_text), 'text_exists': ref_text.exists()}
 
+    @staticmethod
+    def _news_pack_status(pack: Dict[str, Any], *, cached: bool = False) -> str:
+        items = [item for item in (pack.get("items") or []) if isinstance(item, dict)]
+        verified = sum(1 for item in items if item.get("status") == "verified")
+        review = sum(1 for item in items if item.get("status") == "review")
+        prefix = "загружена сохранённая лента" if cached else "новости готовы"
+        return (
+            f"{prefix}: {verified} проверено, {review} требуют внимания"
+            + ("; используется файл" if pack.get("fallback_used") else "")
+        )
+
     def prepare_news_pack(self, reason: str = "auto", *, force: bool = False) -> Dict[str, Any]:
         """Build one auditable news pack and keep its editorial state visible."""
         if not self.cfg.get("news_enabled", True) or not self.cfg.get("news_agent_enabled", True):
@@ -822,14 +847,7 @@ class RadioEngine:
             self.news_status = "собираю и проверяю новости..."
         try:
             pack = self.news_agent.build(force=force)
-            items = [item for item in (pack.get("items") or []) if isinstance(item, dict)]
-            verified = sum(1 for item in items if item.get("status") == "verified")
-            review = sum(1 for item in items if item.get("status") == "review")
-            fallback = bool(pack.get("fallback_used"))
-            status = (
-                f"новости готовы: {verified} проверено, {review} требуют внимания"
-                + ("; используется файл" if fallback else "")
-            )
+            status = self._news_pack_status(pack)
             with self.news_lock:
                 self.news_pack = pack
                 self.news_status = status
@@ -2825,8 +2843,10 @@ class RadioEngine:
         """Build/update cache\track_profiles.json in background from the web panel."""
         if self.track_profile_thread and self.track_profile_thread.is_alive():
             return False
+        self.track_profile_cancel_event.clear()
 
         def worker() -> None:
+            proc: Optional[subprocess.Popen[str]] = None
             try:
                 force = bool(self.cfg.get("track_profiles_force_rebuild_existing", False) if force_existing is None else force_existing)
                 self.track_profile_status = ("пересобираю все профили: веб-поиск, чтение страниц и проверка через LM Studio..." if force else "исследую только новые/неописанные треки через веб-поиск и LM Studio...")
@@ -2853,6 +2873,7 @@ class RadioEngine:
                     stderr=subprocess.STDOUT,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
+                self.track_profile_process = proc
                 if proc.stdout is None:
                     raise RuntimeError("Track profile process started without stdout")
                 tail: List[str] = []
@@ -2873,7 +2894,10 @@ class RadioEngine:
                     elif line.startswith("[TrackProfiles] analyzing:"):
                         self.track_profile_progress["detail"] = line.split(":", 1)[-1].strip()
                 rc = proc.wait()
-                if rc != 0:
+                if self.track_profile_cancel_event.is_set():
+                    self.track_profile_status = "обновление описаний отменено"
+                    self.track_profile_progress = {"current": 0, "total": 0, "percent": 0, "detail": "отменено пользователем"}
+                elif rc != 0:
                     self.track_profile_status = f"ошибка описаний треков: код {rc}"
                 else:
                     self.track_profiles = load_track_profiles(self.cfg) if self.cfg.get("track_profiles_enabled", True) else {}
@@ -2881,12 +2905,34 @@ class RadioEngine:
                     self.track_profile_status = f"описания треков готовы: {len(self.track_profiles)} записей"
                 log(self.track_profile_status)
             except Exception as e:
-                self.track_profile_status = f"ошибка описаний треков: {e}"
-                self.track_profile_progress["detail"] = str(e)
+                if self.track_profile_cancel_event.is_set():
+                    self.track_profile_status = "обновление описаний отменено"
+                    self.track_profile_progress = {"current": 0, "total": 0, "percent": 0, "detail": "отменено пользователем"}
+                else:
+                    self.track_profile_status = f"ошибка описаний треков: {e}"
+                    self.track_profile_progress["detail"] = str(e)
                 log(self.track_profile_status)
+            finally:
+                if self.track_profile_process is proc:
+                    self.track_profile_process = None
 
         self.track_profile_thread = threading.Thread(target=worker, name="BuildTrackProfiles", daemon=True)
         self.track_profile_thread.start()
+        return True
+
+    def cancel_track_profiles_build(self) -> bool:
+        thread = self.track_profile_thread
+        if not thread or not thread.is_alive():
+            return False
+        self.track_profile_cancel_event.set()
+        self.track_profile_status = "останавливаю обновление описаний..."
+        self.track_profile_progress["detail"] = "остановка анализатора"
+        proc = self.track_profile_process
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception as exc:
+                log(f"Не удалось остановить анализатор треков: {exc}")
         return True
 
     def start_show_plan_generation(self, duration_minutes: Optional[int] = None, *, preserve_planned_mode: bool = False) -> bool:
@@ -3372,6 +3418,7 @@ class RadioEngine:
                 "show_plan_cancel_requested": plan_cancel_requested,
                 "track_profile_status": self.track_profile_status,
                 "track_profile_building": bool(self.track_profile_thread and self.track_profile_thread.is_alive()),
+                "track_profile_cancel_requested": self.track_profile_cancel_event.is_set(),
                 "track_profile_count": len(self.track_profiles),
                 "entertainment_status": self.entertainment_status,
                 "entertainment_enabled": bool(self.cfg.get("entertainment_enabled", False)),
@@ -3390,6 +3437,7 @@ class RadioEngine:
         with self.news_lock:
             raw_news_pack = dict(self.news_pack)
             news_status = self.news_status
+            news_refreshing = bool(self.news_thread and self.news_thread.is_alive())
         source_urls: Dict[int, str] = {}
         for source in raw_news_pack.get("sources") or []:
             if not isinstance(source, dict):
@@ -3419,6 +3467,7 @@ class RadioEngine:
             ]
             public_news_items.append(item)
         snap["news_status"] = news_status
+        snap["news_refreshing"] = news_refreshing
         snap["news_pack"] = {
             "created_at": iso_timestamp(raw_news_pack.get("created_at")),
             "expires_at": iso_timestamp(raw_news_pack.get("expires_at")),

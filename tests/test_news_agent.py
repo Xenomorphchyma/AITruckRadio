@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 
 import pytest
 
@@ -152,6 +153,58 @@ def test_collection_uses_injected_io_source_ids_and_official_path(tmp_path: Path
     assert research["sources"][0]["expires_at"] == 4600
     assert research["sources"][0]["official"] is True
     assert research["sources"][0]["official_path"] is True
+
+
+def test_collection_expands_section_into_direct_article_links(tmp_path: Path) -> None:
+    cfg = make_cfg(tmp_path)
+    cfg["news_agent_official_domains"] = ["official.gov"]
+
+    def search(_query, _timeout, _limit):
+        return [{"url": "https://official.gov/news", "title": "News"}]
+
+    def read(url, _timeout, _max_chars):
+        if url == "https://official.gov/news":
+            return {
+                "url": url,
+                "title": "News",
+                "text": "Новости ведомства " * 10,
+                "published_at": "",
+                "links": [
+                    "https://official.gov/sport-football",
+                    "https://official.gov/2026/08/03/fresh-story",
+                ],
+            }
+        return {
+            "url": url,
+            "title": "Fresh story",
+            "text": "Подробности подтверждённой свежей новости. " * 5,
+            "published_at": "2026-08-03T06:30:00Z",
+            "links": [],
+        }
+
+    research = NewsAgent(cfg, search_fn=search, read_fn=read, now_fn=lambda: 1000).collect_sources()
+    assert research["sources"][0]["url"] == "https://official.gov/2026/08/03/fresh-story"
+    assert research["sources"][0]["direct_article"] is True
+    assert research["sources"][0]["official"] is True
+
+
+def test_collection_runs_search_jobs_concurrently(tmp_path: Path) -> None:
+    cfg = make_cfg(tmp_path)
+    cfg["news_agent_queries"] = ["one", "two"]
+    cfg["news_agent_official_domains"] = ["official.gov"]
+    cfg["news_agent_search_workers"] = 4
+    started = []
+
+    def search(query, _timeout, _limit):
+        started.append(query)
+        time.sleep(0.03)
+        return []
+
+    before = time.monotonic()
+    NewsAgent(cfg, search_fn=search, read_fn=lambda *_: {}, now_fn=lambda: 1000).collect_sources()
+    elapsed = time.monotonic() - before
+    assert len(started) == 4
+    assert elapsed < 0.1
 
 
 def test_two_pass_factcheck_independent_domains_and_official_source(tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ def clean_host_text(text: str, max_chars: int = 4000) -> str:
         end = lower.find("</think>", start)
         text = text[:start] + text[end + len("</think>"):]
         lower = text.lower()
-    text = text.replace("```", "")
+    text = re.sub(r"```(?:text|markdown)?\s*", "", text, flags=re.IGNORECASE)
     # Убираем сценические ремарки и маркдауны до парсинга ведущих.
     text = re.sub(r"<0x[0-9A-Fa-f]{2,8}>", "", text)
     text = re.sub(r"[\U00010000-\U0010ffff]", "", text)
@@ -571,6 +571,8 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
             sign = str(item.get("sign") or "").strip() if isinstance(item, dict) else ""
             if sign and not re.search(rf"(?<!\w){re.escape(sign)}\s*:", str(text or ""), flags=re.IGNORECASE):
                 out.append(f"в гороскопе отсутствует точная строка «{sign}: прогноз»")
+            if sign and re.search(rf"\bзнак\s+{re.escape(sign)}\s*:", str(text or ""), flags=re.IGNORECASE):
+                out.append(f"название знака нужно писать строго «{sign}:», без префикса «Знак»")
         expected_signs = {
             str(item.get("sign") or "").strip().casefold()
             for item in expected_horoscope
@@ -600,6 +602,36 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
         ):
             out.append("продолжение гороскопа можно обещать только в следующий выход, без выдуманного времени")
     if ctx.get("riddle_question_block"):
+        question = str(ctx.get("riddle_question_text") or "").strip()
+        if question:
+            ignored = {"какой", "какая", "какое", "который", "можно", "нельзя", "имеет", "будет", "ответ"}
+            question_stems = {
+                token[:5]
+                for token in re.findall(r"[а-яё]{4,}", question.casefold())
+                if token not in ignored
+            }
+            matched_stems = {stem for stem in question_stems if stem.replace("ё", "е") in folded}
+            needed = min(2, len(question_stems))
+            if needed and len(matched_stems) < needed:
+                out.append("в блоке вопроса не прозвучала подготовленная загадка")
+        options = [
+            str(item or "").strip()
+            for item in (ctx.get("riddle_options") or [])
+            if str(item or "").strip()
+        ]
+        if options:
+            option_matches = 0
+            for option in options:
+                stems = [token[:4].replace("ё", "е") for token in re.findall(r"[а-яё]{4,}", option.casefold())]
+                if stems and all(stem in folded for stem in stems):
+                    option_matches += 1
+            if option_matches < min(2, len(options)):
+                out.append("в блоке вопроса отсутствуют подготовленные варианты ответа")
+        if question and not re.search(
+            r"\bответ\w*[^.!?]{0,90}\bследующ\w+\s+(?:выход|раз)\w*\b",
+            folded,
+        ):
+            out.append("нужно явно сказать, что ответ прозвучит в следующий выход ведущих")
         answer_reveal_patterns = [
             r"\bправильн\w*\s+ответ\w*(?:\s+на\s+[^.!?]{1,40})?\s*(?:[—–:=-]|это\b|является\b)",
             r"\bответ\s+на\s+(?:нашу|эту|сегодняшн\w+)\s+загадк\w*\s*[—–:=-]",
@@ -629,6 +661,31 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
         if not re.search(r"\b(?:ответ|разгадк)\w*\b", folded):
             out.append("ответ на загадку нужно объявить явно, а не оставлять как догадку в разговоре")
     wrong_correct = str(ctx.get("wrong_game_correct_answer") or "").strip()
+    wrong_question = str(ctx.get("wrong_game_question") or "").strip()
+    if wrong_question:
+        ignored = {"какой", "какая", "какое", "сколько", "будет", "ответ"}
+        question_stems = {
+            token[:5]
+            for token in re.findall(r"[а-яё]{4,}", wrong_question.casefold())
+            if token not in ignored
+        }
+        matched_stems = {stem for stem in question_stems if stem.replace("ё", "е") in folded}
+        needed = min(2, len(question_stems))
+        if needed and len(matched_stems) < needed:
+            out.append("в игре не прозвучал подготовленный вопрос")
+        wrong_examples = [
+            str(item or "").strip()
+            for item in (ctx.get("wrong_game_wrong_examples") or [])
+            if str(item or "").strip()
+        ]
+        example_found = False
+        for example in wrong_examples:
+            stems = [token[:5].replace("ё", "е") for token in re.findall(r"[а-яё]{5,}", example.casefold())]
+            if stems and any(stem in folded for stem in stems):
+                example_found = True
+                break
+        if wrong_examples and not example_found:
+            out.append("в игре не прозвучал ни один подготовленный неправильный ответ")
     if wrong_correct:
         normalized_correct = wrong_correct.casefold().replace("\u0301", "").replace("ё", "е")
         if normalized_correct and re.search(rf"(?<!\w){re.escape(normalized_correct)}(?!\w)", folded, flags=re.IGNORECASE):
@@ -677,6 +734,41 @@ def context_violations_for_host_text(text: str, ctx: Optional[Dict[str, Any]] = 
             )
             if declared_name and declared_name.group(1).casefold() not in story.casefold():
                 out.append("гость назвал вымышленное имя, которого нет в подготовленной истории")
+
+    authorized_latin_text = " ".join(
+        str(ctx.get(key) or "")
+        for key in (
+            "previous_track_name",
+            "next_track_name",
+            "planned_previous_track",
+            "planned_next_track",
+            "previous_track_info",
+            "next_track_info",
+            "news_text",
+            "greeting_text",
+            "entertainment_text",
+        )
+    )
+    guest_story_data = ctx.get("guest_story_data") or {}
+    if isinstance(guest_story_data, dict):
+        authorized_latin_text += " " + " ".join(str(value or "") for value in guest_story_data.values())
+    authorized_latin = {
+        token.casefold()
+        for token in re.findall(r"[a-z][a-z0-9'-]{2,}", authorized_latin_text, flags=re.IGNORECASE)
+    }
+    tag_latin = {
+        token.casefold()
+        for tag in OMNIVOICE_NONVERBAL_TAGS
+        for token in re.findall(r"[a-z][a-z0-9'-]{2,}", tag, flags=re.IGNORECASE)
+    }
+    unexpected_latin = {
+        token.casefold()
+        for token in re.findall(r"[a-z][a-z0-9'-]{2,}", str(text or ""), flags=re.IGNORECASE)
+        if token.casefold() not in authorized_latin and token.casefold() not in tag_latin
+    }
+    if unexpected_latin:
+        sample = ", ".join(sorted(unexpected_latin)[:5])
+        out.append(f"в русской эфирной реплике появились посторонние латинские слова: {sample}")
     return out
 
 

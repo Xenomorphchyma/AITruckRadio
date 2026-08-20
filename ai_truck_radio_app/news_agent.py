@@ -5,6 +5,7 @@ import json
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -23,12 +24,13 @@ NEWS_DRAFT_SCHEMA = {
     "properties": {
         "items": {
             "type": "array",
+            "maxItems": 8,
             "items": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string"},
-                    "summary": {"type": "string"},
-                    "source_ids": {"type": "array", "items": {"type": "integer"}},
+                    "title": {"type": "string", "maxLength": 180},
+                    "summary": {"type": "string", "maxLength": 900},
+                    "source_ids": {"type": "array", "maxItems": 8, "items": {"type": "integer"}},
                 },
                 "required": ["title", "summary", "source_ids"],
                 "additionalProperties": False,
@@ -44,13 +46,14 @@ NEWS_FACTCHECK_SCHEMA = {
     "properties": {
         "items": {
             "type": "array",
+            "maxItems": 8,
             "items": {
                 "type": "object",
                 "properties": {
                     "draft_id": {"type": "string"},
                     "decision": {"type": "string", "enum": ["verified", "review", "rejected"]},
-                    "source_ids": {"type": "array", "items": {"type": "integer"}},
-                    "notes": {"type": "string"},
+                    "source_ids": {"type": "array", "maxItems": 8, "items": {"type": "integer"}},
+                    "notes": {"type": "string", "maxLength": 500},
                 },
                 "required": ["draft_id", "decision", "source_ids", "notes"],
                 "additionalProperties": False,
@@ -101,6 +104,18 @@ def _is_direct_article_url(url: str) -> bool:
         "society", "sport", "world", "region", "regions", "russia",
     }
     return not (len(parts) == 1 and parts[0] in generic_sections)
+
+
+def _article_link_priority(url: str) -> tuple[int, int]:
+    """Prefer unmistakable article URLs over taxonomy/category slugs."""
+    path = urllib.parse.urlparse(str(url or "")).path.casefold()
+    if re.search(r"/(?:article|news|novosti)/\d+(?:/|$)", path):
+        return (0, len(path))
+    if re.search(r"/20\d{2}(?:/|-)?(?:0[1-9]|1[0-2])(?:/|-)?(?:0[1-9]|[12]\d|3[01])(?:/|[-_])", path):
+        return (1, len(path))
+    if re.search(r"\d{5,}", path):
+        return (2, len(path))
+    return (3, len(path))
 
 
 def _has_publication_date(value: Any) -> bool:
@@ -283,19 +298,32 @@ class NewsAgent:
         min_chars = max(20, int(self.cfg.get("news_agent_min_page_chars", 200) or 200))
         ttl_sec = max(60, int(self.cfg.get("news_agent_source_ttl_sec", 21600) or 21600))
         now = int(self.now_fn())
+        research_deadline = time.monotonic() + max(
+            10,
+            int(self.cfg.get("news_agent_research_timeout_sec", 90) or 90),
+        )
 
         search_jobs: List[tuple[str, bool]] = []
         for query in query_list:
             search_jobs.extend((f"site:{domain} {query}", True) for domain in official_domains)
             search_jobs.append((query, False))
 
+        def run_search(job: tuple[str, bool]) -> tuple[str, bool, List[Dict[str, Any]], str]:
+            query, official_path = job
+            try:
+                return query, official_path, list(self.search_fn(query, timeout, per_query) or []), ""
+            except Exception as exc:
+                return query, official_path, [], str(exc)
+
+        workers = max(1, min(6, int(self.cfg.get("news_agent_search_workers", 5) or 5), len(search_jobs)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-search") as executor:
+            search_results = list(executor.map(run_search, search_jobs))
+
         results: List[Dict[str, Any]] = []
         seen_urls = set()
-        for query, official_path in search_jobs:
-            try:
-                found = self.search_fn(query, timeout, per_query)
-            except Exception as exc:
-                log(f"NewsAgent: поиск пропущен для {query!r}: {exc}")
+        for query, official_path, found, error in search_results:
+            if error:
+                log(f"NewsAgent: поиск пропущен для {query!r}: {error}")
                 continue
             for raw in found or []:
                 if not isinstance(raw, dict):
@@ -310,12 +338,34 @@ class NewsAgent:
                 result["official_path"] = official_path
                 results.append(result)
 
-        sources: List[Dict[str, Any]] = []
+        # Do not let the first configured newsroom monopolise the source/page
+        # limit (or all timeout budget). Interleave domains before expanding
+        # section pages into concrete articles.
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
         for result in results:
+            buckets.setdefault(_domain(str(result.get("url") or "")), []).append(result)
+        results = []
+        while any(buckets.values()):
+            for bucket in buckets.values():
+                if bucket:
+                    results.append(bucket.pop(0))
+
+        sources: List[Dict[str, Any]] = []
+        pending = list(results)
+        read_urls = set()
+        while pending:
             if len(sources) >= max_pages:
                 break
+            if time.monotonic() >= research_deadline:
+                log("NewsAgent: достигнут общий лимит времени сбора источников")
+                break
+            result = pending.pop(0)
+            result_url = str(result["url"])
+            if result_url in read_urls:
+                continue
+            read_urls.add(result_url)
             try:
-                page = self.read_fn(str(result["url"]), timeout, page_chars)
+                page = self.read_fn(result_url, timeout, page_chars)
             except Exception as exc:
                 log(f"NewsAgent: источник пропущен {result['url']}: {exc}")
                 continue
@@ -326,6 +376,28 @@ class NewsAgent:
                 continue
             url = _canonical_url(str(page.get("url") or result["url"])) or str(result["url"])
             domain = _domain(url)
+            direct_article = _is_direct_article_url(url)
+            discovered: List[Dict[str, Any]] = []
+            if not direct_article or not _has_publication_date(page.get("published_at")):
+                for raw_link in page.get("links") or []:
+                    link = _canonical_url(str(raw_link or ""))
+                    if not link or link in read_urls or _domain(link) != domain or not _is_direct_article_url(link):
+                        continue
+                    discovered.append({
+                        "url": link,
+                        "title": "",
+                        "query": str(result.get("query") or ""),
+                        "official_path": bool(result.get("official_path")),
+                    })
+                discovered.sort(key=lambda item: _article_link_priority(str(item["url"])))
+                discovered = discovered[:per_query]
+            if discovered:
+                # Search engines often return a newsroom's home/section page.
+                # Prefer its concrete article links as evidence and do not spend
+                # the source limit on the undated index page itself.
+                insert_at = 1 if pending else 0
+                pending[insert_at:insert_at] = discovered
+                continue
             is_configured_official = any(domain == official or domain.endswith("." + official) for official in official_domains)
             source = {
                 "source_id": len(sources) + 1,
@@ -338,7 +410,7 @@ class NewsAgent:
                 "official": bool(page.get("official") or result.get("official") or is_configured_official),
                 "official_path": bool(result.get("official_path")),
                 "published_at": _clean(page.get("published_at") or result.get("published_at"), 80),
-                "direct_article": _is_direct_article_url(url),
+                "direct_article": direct_article,
                 "fetched_at": now,
                 "expires_at": now + ttl_sec,
             }
@@ -521,9 +593,11 @@ class NewsAgent:
 
         evidence = self._evidence(sources)
         try:
+            max_items = max(1, int(self.cfg.get("news_agent_max_items", 8) or 8))
             draft_data = self._generate(
                 "Собери короткие актуальные новости для радио только из SOURCE. Не объединяй несвязанные события. "
-                "Каждый source_id обязан подтверждать заголовок и summary. Верни только JSON.\n\n" + evidence,
+                f"Каждый source_id обязан подтверждать заголовок и summary. Не более {max_items} новостей. "
+                "Заголовок до 180 символов, summary до 900 символов. Верни только JSON.\n\n" + evidence,
                 factcheck=False,
             )
             items = self._draft_items(draft_data, sources, now)

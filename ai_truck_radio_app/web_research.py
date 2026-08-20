@@ -8,7 +8,7 @@ import socket
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AITruckRadio/0.8"
@@ -101,9 +101,23 @@ class PageParser(HTMLParser):
         self.depth = 0
         self.title = ""
         self.in_title = False
+        self.published_at = ""
         self.chunks: List[str] = []
+        self.links: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[tuple[str, str | None]]) -> None:
+        values = {str(key).casefold(): str(value or "") for key, value in attrs}
+        if tag == "meta":
+            marker = (values.get("property") or values.get("name") or values.get("itemprop") or "").casefold()
+            if marker in {
+                "article:published_time", "og:published_time", "datepublished",
+                "date", "pubdate", "publishdate", "timestamp",
+            } and values.get("content") and not self.published_at:
+                self.published_at = values["content"].strip()
+        elif tag == "time" and values.get("datetime") and not self.published_at:
+            self.published_at = values["datetime"].strip()
+        elif tag == "a" and values.get("href") and len(self.links) < 300:
+            self.links.append(values["href"].strip())
         if tag in self.blocked:
             self.depth += 1
         if tag == "title":
@@ -200,7 +214,7 @@ def search_pages(query: str, timeout: int, limit: int) -> List[Dict[str, str]]:
     return out
 
 
-def read_page(url: str, timeout: int, max_chars: int) -> Dict[str, str]:
+def read_page(url: str, timeout: int, max_chars: int) -> Dict[str, Any]:
     if not _public_url(url):
         raise ValueError("not a public URL")
     raw, content_type = _fetch(url, timeout, 1_500_000)
@@ -217,8 +231,21 @@ def read_page(url: str, timeout: int, max_chars: int) -> Dict[str, str]:
         parser.feed(decoded)
         title = parser.title
         text = " ".join(parser.chunks)
+    links: List[str] = []
+    if "text/plain" not in content_type:
+        seen_links = set()
+        for href in parser.links:
+            absolute = _canonical_url(urllib.parse.urljoin(url, href))
+            if absolute in seen_links or not absolute.startswith(("http://", "https://")):
+                continue
+            seen_links.add(absolute)
+            links.append(absolute)
+            if len(links) >= 100:
+                break
     return {
         "url": url,
         "title": title[:300],
         "text": re.sub(r"\s+", " ", html.unescape(text)).strip()[:max_chars],
+        "published_at": (parser.published_at[:80] if "text/plain" not in content_type else ""),
+        "links": links,
     }

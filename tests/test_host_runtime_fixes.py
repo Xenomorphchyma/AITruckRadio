@@ -183,6 +183,21 @@ class HostRuntimeFixesTests(unittest.TestCase):
         )
         self.assertEqual([], violations)
 
+    def test_mixed_english_is_rejected_but_real_track_names_are_allowed(self):
+        ctx = {
+            "host_strict_clock_guard": False,
+            "previous_track_name": "65daysofstatic — The Undertow",
+            "next_track_name": "A-Ha — Take On Me",
+        }
+        invalid = context_violations_for_host_text(
+            "Максим: Это же beautifully, и теперь всё went по-хорошо.", ctx
+        )
+        valid = context_violations_for_host_text(
+            "Максим: Только что звучали 65daysofstatic — The Undertow, дальше A-Ha — Take On Me.", ctx
+        )
+        self.assertTrue(any("латинские слова" in item for item in invalid))
+        self.assertEqual([], valid)
+
     def test_repeated_daypart_greeting_is_rejected_after_intro(self):
         violations = context_violations_for_host_text(
             "Максим: Доброе утро, Волна FM приветствует вас снова.",
@@ -278,12 +293,49 @@ class HostRuntimeFixesTests(unittest.TestCase):
                 violations = context_violations_for_host_text(text, ctx)
                 self.assertTrue(any("в следующий выход" in item for item in violations))
 
+    def test_riddle_question_requires_question_options_and_next_exit_promise(self):
+        ctx = {
+            "riddle_question_block": True,
+            "riddle_question_text": "Что можно держать, не касаясь руками?",
+            "riddle_options": ["обещание", "зонт", "микрофон", "гитара"],
+            "host_strict_clock_guard": False,
+        }
+        missing = context_violations_for_host_text(
+            "Максим: Следующий трек уже на подходе.", ctx
+        )
+        valid = context_violations_for_host_text(
+            "Максим: Что можно держать, не касаясь руками? Варианты: обещание, зонт, микрофон или гитара. Ответ прозвучит в следующий выход ведущих.",
+            ctx,
+        )
+        self.assertTrue(any("не прозвучала подготовленная загадка" in item for item in missing))
+        self.assertTrue(any("варианты ответа" in item for item in missing))
+        self.assertTrue(any("следующий выход" in item for item in missing))
+        self.assertEqual([], valid)
+
     def test_wrong_answer_game_rejects_the_real_answer(self):
         violations = context_violations_for_host_text(
             "Ирина: Зелёный, хотя потом выберу фиолетовый.",
             {"wrong_game_correct_answer": "зелёный", "host_strict_clock_guard": False},
         )
         self.assertTrue(any("настоящий правильный ответ" in item for item in violations))
+
+    def test_wrong_answer_game_requires_prepared_question_and_wrong_answer(self):
+        ctx = {
+            "wrong_game_question": "Сколько ног у кошки?",
+            "wrong_game_correct_answer": "четыре",
+            "wrong_game_wrong_examples": ["семь с половиной", "одна запасная в кармане"],
+            "host_strict_clock_guard": False,
+        }
+        missing = context_violations_for_host_text(
+            "Максим: Следующий трек уже на подходе.", ctx
+        )
+        valid = context_violations_for_host_text(
+            "Максим: Сколько ног у кошки? Ирина: Мой неправильный ответ — семь с половиной.",
+            ctx,
+        )
+        self.assertTrue(any("подготовленный вопрос" in item for item in missing))
+        self.assertTrue(any("неправильный ответ" in item for item in missing))
+        self.assertEqual([], valid)
 
     def test_guest_block_requires_a_separate_guest_replica(self):
         violations = context_violations_for_host_text(

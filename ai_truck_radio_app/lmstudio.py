@@ -49,7 +49,16 @@ def _host_output_token_limit(cfg: Dict[str, Any], ctx: Dict[str, Any]) -> int:
     horoscope_count = len(ctx.get("horoscope_expected") or [])
     if horoscope_count:
         length_cap = max(length_cap, min(900, 180 + horoscope_count * 60))
+    reasoning = str(cfg.get("lm_reasoning_effort", "auto") or "auto").strip().lower()
+    reasoning_reserve = {"low": 400, "medium": 800, "high": 1200}.get(reasoning, 0)
+    if reasoning_reserve:
+        # LM Studio accounts hidden reasoning and final text against the same
+        # max_tokens budget. Preserve the normal radio-text allowance instead
+        # of letting a thinking model consume it before producing an answer.
+        length_cap += reasoning_reserve
     hard_cap = max(96, int(cfg.get("lm_host_max_tokens", 760) or 760))
+    if reasoning_reserve:
+        hard_cap = max(hard_cap, 1400)
     return max(96, min(configured, length_cap, hard_cap))
 
 
@@ -290,14 +299,44 @@ class LMStudioClient:
         """Distinguish a reachable server with no model from no server at all."""
         try:
             data = self._request_json("GET", f"{self.base_url}/models")
-            models: List[str] = []
+            catalog_models: List[str] = []
             for item in data.get("data", []):
                 if isinstance(item, dict) and item.get("id"):
-                    models.append(str(item["id"]))
-            return {"reachable": True, "models": models, "error": ""}
+                    catalog_models.append(str(item["id"]))
+
+            # Since LM Studio 0.4, the OpenAI-compatible /v1/models endpoint may
+            # contain the whole downloaded catalogue.  The native endpoint is
+            # the authoritative source for what is actually loaded right now.
+            loaded_models: List[str] = []
+            native_url = self.base_url[:-3] + "/api/v1/models" if self.base_url.endswith("/v1") else ""
+            if native_url:
+                try:
+                    native = self._request_json("GET", native_url)
+                    for item in native.get("models", []):
+                        if not isinstance(item, dict) or not item.get("loaded_instances"):
+                            continue
+                        key = str(item.get("key") or "").strip()
+                        if key:
+                            loaded_models.append(key)
+                        for instance in item.get("loaded_instances") or []:
+                            instance_id = str(instance.get("id") or "").strip() if isinstance(instance, dict) else ""
+                            if instance_id and instance_id not in loaded_models:
+                                loaded_models.append(instance_id)
+                except Exception:
+                    # Older LM Studio versions expose only loaded models through
+                    # /v1/models and do not implement the native catalogue API.
+                    loaded_models = list(catalog_models)
+            else:
+                loaded_models = list(catalog_models)
+            return {
+                "reachable": True,
+                "models": loaded_models,
+                "catalog_models": catalog_models,
+                "error": "",
+            }
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
-            return {"reachable": False, "models": [], "error": message[:500]}
+            return {"reachable": False, "models": [], "catalog_models": [], "error": message[:500]}
 
     def pick_model(self) -> str:
         models = self.list_models()
@@ -307,6 +346,16 @@ class LMStudioClient:
                 return models[0]
             return wanted
         return wanted
+
+    def _apply_reasoning_effort(self, payload: Dict[str, Any], *, no_think: bool = False) -> None:
+        effort = str(self.cfg.get("lm_reasoning_effort", "auto") or "auto").strip().lower()
+        if no_think and effort == "auto":
+            effort = "none"
+        if effort in {"none", "minimal", "low", "medium", "high"}:
+            # LM Studio maps ``none`` to the model's public reasoning=off
+            # capability. Unlike a textual /no_think hint this prevents hidden
+            # reasoning tokens from consuming the whole radio reply budget.
+            payload["reasoning_effort"] = effort
 
     def generate_plain_text(
         self,
@@ -338,6 +387,7 @@ class LMStudioClient:
             "max_tokens": int(max_tokens or min(1200, int(self.cfg.get("lm_max_tokens", 760) or 760))),
             "stream": False,
         }
+        self._apply_reasoning_effort(payload, no_think=no_think)
         if structured_output:
             schema = response_schema or {
                 "type": "object",
@@ -358,7 +408,8 @@ class LMStudioClient:
         if not choices:
             return ""
         msg = choices[0].get("message") or {}
-        return str(msg.get("content") or msg.get("reasoning_content") or "").strip()
+        # Never treat private chain-of-thought as a ready radio script/JSON.
+        return str(msg.get("content") or "").strip()
 
     def generate_host_line(self, previous_track: Optional[Track], next_track: Optional[Track], ctx: Dict[str, Any]) -> str:
         """Generate one host break.
@@ -381,6 +432,7 @@ class LMStudioClient:
                 "max_tokens": _host_output_token_limit(self.cfg, ctx),
                 "stream": False,
             }
+            self._apply_reasoning_effort(payload)
             data = self._request_json("POST", f"{self.base_url}/chat/completions", payload)
             choices = data.get("choices") or []
             if not choices:
@@ -632,6 +684,7 @@ class LMStudioClient:
             "max_tokens": int(self.cfg.get("lm_max_tokens", 620)),
             "stream": False,
         }
+        self._apply_reasoning_effort(payload)
         data = self._request_json("POST", f"{self.base_url}/chat/completions", payload)
         choices = data.get("choices") or []
         if not choices:

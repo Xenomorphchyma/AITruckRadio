@@ -89,6 +89,15 @@ def test_quality_contract_rejects_unknown_speaker_prefix_before_parsing() -> Non
     assert any("неизвестный префикс" in item and "Алексей" in item for item in report.violations)
 
 
+def test_quality_contract_allows_rubric_content_labels() -> None:
+    report = evaluate_dialogue_quality(
+        "Максим: Вопрос: сколько ног у кошки? Варианты: обещание, зонт или микрофон.",
+        {"hosts": [{"name": "Максим"}], "computer_hour": 14},
+        {"speaker_sequence": ["Максим"]},
+    )
+    assert report.ok, report.violations
+
+
 def test_quality_contract_allows_horoscope_and_data_driven_content_labels() -> None:
     ctx = {
         "hosts": [{"name": "Ирина"}],

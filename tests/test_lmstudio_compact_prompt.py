@@ -37,7 +37,7 @@ def _post_payload(client: FakeLMStudioClient) -> dict:
 def test_model_probe_distinguishes_offline_server_from_empty_model_list() -> None:
     client = LMStudioClient({"lm_base_url": "http://127.0.0.1:1234/v1", "lm_timeout_sec": 1, "lm_model": "local-model"})
     client._request_json = lambda *_args, **_kwargs: {"data": []}  # type: ignore[method-assign]
-    assert client.probe_models() == {"reachable": True, "models": [], "error": ""}
+    assert client.probe_models() == {"reachable": True, "models": [], "catalog_models": [], "error": ""}
 
     def unavailable(*_args, **_kwargs):
         raise RuntimeError("connection refused")
@@ -46,7 +46,55 @@ def test_model_probe_distinguishes_offline_server_from_empty_model_list() -> Non
     probe = client.probe_models()
     assert probe["reachable"] is False
     assert probe["models"] == []
+    assert probe["catalog_models"] == []
     assert "connection refused" in probe["error"]
+
+
+def test_model_probe_separates_catalogue_from_loaded_instances() -> None:
+    client = LMStudioClient({"lm_base_url": "http://127.0.0.1:1234/v1", "lm_timeout_sec": 1, "lm_model": "local-model"})
+
+    def fake_request(_method, url, *_args, **_kwargs):
+        if url.endswith("/api/v1/models"):
+            return {
+                "models": [
+                    {"key": "bonsai-27b", "loaded_instances": [{"id": "bonsai-27b"}]},
+                    {"key": "saiga", "loaded_instances": []},
+                ]
+            }
+        return {"data": [{"id": "bonsai-27b"}, {"id": "saiga"}]}
+
+    client._request_json = fake_request  # type: ignore[method-assign]
+    probe = client.probe_models()
+    assert probe["models"] == ["bonsai-27b"]
+    assert probe["catalog_models"] == ["bonsai-27b", "saiga"]
+
+
+def test_reasoning_effort_none_is_sent_to_host_generation() -> None:
+    client = FakeLMStudioClient(
+        ["Максим: Продолжаем эфир."],
+        {"lm_reasoning_effort": "none"},
+    )
+    client.generate_host_line(None, None, _large_context())
+    assert _post_payload(client)["reasoning_effort"] == "none"
+
+
+def test_reasoning_effort_low_reserves_tokens_for_hidden_thinking() -> None:
+    client = FakeLMStudioClient(
+        ["Максим: Продолжаем эфир."],
+        {"lm_reasoning_effort": "low", "lm_max_tokens": 1400},
+    )
+    client.generate_host_line(None, None, _large_context())
+    payload = _post_payload(client)
+    assert payload["reasoning_effort"] == "low"
+    assert payload["max_tokens"] == 760
+
+
+def test_plain_text_never_returns_private_reasoning_as_final_answer() -> None:
+    client = LMStudioClient({"lm_base_url": "http://offline.invalid/v1", "lm_model": "test"})
+    client._request_json = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+        "choices": [{"message": {"content": "", "reasoning_content": "private reasoning"}}]
+    }
+    assert client.generate_plain_text("test") == ""
 
 
 def test_compact_prompt_is_bounded_prioritized_and_preserves_speaker_schema() -> None:
