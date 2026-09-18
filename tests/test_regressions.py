@@ -51,6 +51,28 @@ def test_normalize_config_recovers_invalid_audio_values_without_overriding_valid
     assert normalized["speech_bed_volume"] == DEFAULT_CONFIG["speech_bed_volume"]
 
 
+@pytest.mark.parametrize("backend", ["none", "sapi", "piper"])
+def test_omnivoice_migration_preserves_explicit_tts_backend(backend: str) -> None:
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["omnivoice_core_profile_version"] = 0
+    cfg["tts_backend"] = backend
+
+    normalized = normalize_config(cfg)
+
+    assert normalized["tts_backend"] == backend
+    assert normalized["omnivoice_core_profile_version"] == 1
+
+
+def test_omnivoice_migration_sets_default_when_tts_backend_is_absent() -> None:
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg.pop("tts_backend")
+    cfg["omnivoice_core_profile_version"] = 0
+
+    normalized = normalize_config(cfg)
+
+    assert normalized["tts_backend"] == "omnivoice"
+
+
 def test_settings_schema_covers_all_runtime_defaults() -> None:
     schema = settings_schema(DEFAULT_CONFIG)
     assert set(DEFAULT_CONFIG).issubset(schema)

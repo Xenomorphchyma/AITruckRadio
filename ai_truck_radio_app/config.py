@@ -669,7 +669,15 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         omni_core_ver = 0
     if omni_core_ver < 1:
         cfg["omnivoice_core_profile_version"] = 1
-        cfg["tts_backend"] = "omnivoice"
+        # The migration used to force every pre-v0.4.5 config to OmniVoice.
+        # That also changed an intentional choice such as ``none``/``sapi``
+        # when the user merely opened the panel after upgrading.  Only an
+        # absent backend (or the explicit legacy marker used by early builds)
+        # should receive the new default; every known or custom backend stays
+        # under the user's control.
+        tts_backend = str(cfg.get("tts_backend") or "").strip().lower()
+        if tts_backend in {"", "legacy", "default", "auto"}:
+            cfg["tts_backend"] = "omnivoice"
         cfg["tts_fallback_chain"] = ["piper", "sapi"]
         cfg["show_experimental_tts_backends"] = False
         cfg["omnivoice_persistent_worker"] = True
