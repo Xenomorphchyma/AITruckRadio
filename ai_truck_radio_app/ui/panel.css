@@ -93,18 +93,20 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .brand-name { font-size: 20px; font-weight: 760; letter-spacing: -0.035em; white-space: nowrap; }
 
 .top-status { display: flex; align-items: center; min-width: 0; height: 100%; padding: 0 18px; overflow: hidden; }
-.run-state, .top-metric { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; white-space: nowrap; }
+.run-state, .top-metric { display: inline-flex; align-items: center; gap: 7px; min-width: 0; min-height: 36px; white-space: nowrap; }
 .run-state { padding-right: 18px; color: var(--ink-2); font-weight: 540; }
 .run-state::after, .top-metric::after { content: ""; align-self: stretch; width: 1px; margin-left: 17px; background: var(--line); }
 .top-metric { color: var(--muted); }
 .top-metric + .top-metric { margin-left: 16px; }
-.top-metric b { color: var(--ink-2); font-weight: 620; }
+.top-metric b { min-width: 0; color: var(--ink-2); font-weight: 620; }
+.run-state > span:last-child, .top-metric b { overflow: hidden; text-overflow: ellipsis; }
 .top-metric .bi { color: var(--ink-2); font-size: 17px; }
 .top-metric .metric-ok { color: var(--success); font-size: 14px; }
 .status-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 4px rgba(217, 45, 32, 0.08); }
 .app-shell.radio-running .status-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(21, 154, 104, 0.1); }
 
-.top-actions { display: flex; align-items: center; gap: 10px; height: 100%; padding: 0 18px 0 8px; }
+.top-actions { display: flex; align-items: center; gap: 10px; min-width: 0; height: 100%; padding: 0 18px 0 8px; }
+.top-actions .button { min-width: 0; }
 .button, .icon-button, .text-button, .nav-item, .mode-switch button, .system-tabs button {
   cursor: pointer;
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 120ms ease, opacity 180ms ease;
@@ -669,6 +671,10 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
 
 @media (max-width: 1240px) {
   :root { --sidebar-width: 156px; }
+  .top-status { padding-inline: 12px; }
+  .run-state { max-width: 190px; padding-right: 12px; }
+  .run-state::after, .top-metric::after { margin-left: 11px; }
+  .top-metric + .top-metric { margin-left: 10px; }
   .top-metric:nth-of-type(3) { display: none; }
   .top-metric:last-child { display: none; }
   .plan-workspace { grid-template-columns: minmax(0, 1fr) 360px; }
@@ -689,7 +695,7 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .brand { justify-content: center; padding: 0 10px; }
   .brand-name { font-size: 0; }
   .brand-name::before { content: "ВFM"; font-size: 17px; }
-  .nav-item { justify-content: center; padding: 0; }
+  .nav-item { position: relative; justify-content: center; padding: 0; }
   .nav-item span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
   .nav-item .bi { width: auto; font-size: 20px; }
   .sidebar-foot .text-button span, .version { display: none; }
@@ -715,6 +721,7 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .top-actions .button.secondary { display: none; }
   .top-actions .button.primary { min-width: 44px; padding: 0 12px; }
   .top-actions .button.primary span { display: none; }
+  .top-actions .icon-button { width: 42px; }
   .sidebar { position: fixed; z-index: 80; top: var(--topbar-height); bottom: 0; left: 0; width: 250px; padding-top: 14px; box-shadow: var(--shadow-popover); transform: translateX(-105%); transition: transform 220ms ease; }
   .sidebar.open { transform: translateX(0); }
   .sidebar.open + .sidebar-scrim { position: fixed; z-index: 70; inset: var(--topbar-height) 0 0; display: block; background: rgba(16,24,40,.24); cursor: default; }
