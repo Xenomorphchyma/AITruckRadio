@@ -811,8 +811,12 @@ class TTS:
                     wav_path = self._qwen3_tts_to_wav(text, h, voice_cfg)
                 elif backend in {"f5_tts", "f5-tts", "f5"}:
                     wav_path = self._f5_tts_to_wav(text, h, voice_cfg)
-                else:
+                elif backend == "sapi":
                     wav_path = self._sapi_to_wav(text, h, voice_cfg)
+                else:
+                    last_error = f"неизвестный TTS backend: {backend}"
+                    log(last_error)
+                    continue
                 if not wav_path or not _audio_file_ready(wav_path):
                     last_error = f"{backend}: wav не создан"
                     log(f"TTS {backend}: wav не создан")
@@ -879,6 +883,9 @@ $synth.Dispose()
 
     def _piper_to_wav(self, text: str, h: str, voice_cfg: Dict[str, Any]) -> Optional[Path]:
         wav_path = self.tmp_dir / f"host_{h}.wav"
+        # A previous failed render may have left a WAV at this deterministic
+        # path. Only an output produced by this attempt is eligible for use.
+        wav_path.unlink(missing_ok=True)
         extra = voice_cfg.get("piper_extra_args") or []
         extra_args = [str(x) for x in extra] if isinstance(extra, list) else []
 
@@ -922,20 +929,23 @@ $synth.Dispose()
             return None
         cmd = [piper_exe, "--model", str(model_path), "--output_file", str(wav_path)]
         cmd.extend(extra_args)
-        proc = subprocess.Popen(
+        wav_path.unlink(missing_ok=True)
+        # subprocess.run kills and reaps the child on timeout. A bare
+        # Popen.communicate timeout left Piper running after fallback began.
+        res = subprocess.run(
             cmd,
-            stdin=subprocess.PIPE,
+            input=text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=90,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        out, err = proc.communicate(text, timeout=90)
-        if proc.returncode != 0:
+        if res.returncode != 0:
             log("Piper не смог создать озвучку:")
-            log((err or out).strip())
+            log((res.stderr or res.stdout).strip())
             return None
         if not _audio_file_ready(wav_path):
             log("Piper завершился без пригодного WAV-файла")

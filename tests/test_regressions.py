@@ -178,6 +178,17 @@ def test_sapi_rejects_missing_or_partial_wav(tmp_path: Path, monkeypatch, output
     assert tts._sapi_to_wav("Проверка", "sapi", {}) is None
 
 
+def test_unknown_tts_backend_is_reported_instead_of_silently_becoming_sapi(tmp_path: Path) -> None:
+    """A typo in the selected backend must not unexpectedly invoke Windows SAPI."""
+    tts = TTS({
+        "cache_dir": str(tmp_path),
+        "tts_backend": "made_up_backend",
+        "tts_fallback_enabled": False,
+        "tts_debug_log": False,
+    })
+    assert tts.get_or_create_mp3("Проверка") is None
+
+
 @pytest.mark.parametrize("event_name", ["stop", "skip", "timeout"])
 def test_audio_runner_interrupts_without_stdout(event_name: str) -> None:
     runner = AudioProcessRunner()
