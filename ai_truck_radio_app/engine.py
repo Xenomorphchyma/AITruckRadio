@@ -60,6 +60,7 @@ from ai_truck_radio_app.news_agent import NewsAgent
 from ai_truck_radio_app.news_history import transition_item as transition_news_item
 from ai_truck_radio_app.server import make_ets2_line
 from ai_truck_radio_app.show_plan_store import ShowPlanStore
+from ai_truck_radio_app.stream_broadcaster import StreamBroadcaster
 from ai_truck_radio_app.text_processing import (
     clean_host_text,
     context_violations_for_host_text,
@@ -119,9 +120,7 @@ class RadioEngine:
         self.lifecycle_lock = threading.RLock()
         self.config_lock = threading.RLock()
         self.audio_runner = AudioProcessRunner()
-        self.subs_lock = threading.Lock()
-        self.subscribers: Dict[int, queue.Queue[Optional[bytes]]] = {}
-        self.next_sub_id = 1
+        self.stream_broadcaster = StreamBroadcaster()
 
         self.now_playing = "Запуск эфира"
         self.current_kind = "startup"
@@ -129,8 +128,6 @@ class RadioEngine:
         self.last_host_text = ""
         self.last_error = ""
         self.used_lm_model = ""
-        self.total_clients = 0
-        self.active_clients = 0
         self.tracks_played = 0
         self.speech_blocks_played = 0
         self.skip_requested_by = ""
@@ -546,44 +543,26 @@ class RadioEngine:
         log(f"Запрошен следующий трек ({by})")
 
     def add_subscriber(self) -> Tuple[int, queue.Queue[Optional[bytes]]]:
-        max_chunks = max(16, int(self.cfg.get("subscriber_queue_chunks", 256)))
-        q: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=max_chunks)
-        with self.subs_lock:
-            sid = self.next_sub_id
-            self.next_sub_id += 1
-            self.subscribers[sid] = q
-        with self.state_lock:
-            self.total_clients += 1
-            self.active_clients += 1
+        sid, q = self.stream_broadcaster.add_subscriber(int(self.cfg.get("subscriber_queue_chunks", 256)))
         if self.cfg.get("log_client_events", False):
             log(f"Клиент #{sid} подключился к /stream.mp3")
         return sid, q
 
     def remove_subscriber(self, sid: int) -> None:
-        with self.subs_lock:
-            self.subscribers.pop(sid, None)
-        with self.state_lock:
-            self.active_clients = max(0, self.active_clients - 1)
+        self.stream_broadcaster.remove_subscriber(sid)
         if self.cfg.get("log_client_events", False):
             log(f"Клиент #{sid} отключился от /stream.mp3")
 
+    @property
+    def total_clients(self) -> int:
+        return self.stream_broadcaster.client_counts()[0]
+
+    @property
+    def active_clients(self) -> int:
+        return self.stream_broadcaster.client_counts()[1]
+
     def _broadcast(self, chunk: Optional[bytes]) -> None:
-        with self.subs_lock:
-            targets = list(self.subscribers.items())
-        for _sid, q in targets:
-            try:
-                q.put_nowait(chunk)
-            except queue.Full:
-                # Live-radio логика: если клиент не успевает, выкидываем старые чанки, а не тормозим эфир.
-                try:
-                    while q.qsize() > max(2, q.maxsize // 2):
-                        q.get_nowait()
-                except Exception:
-                    pass
-                try:
-                    q.put_nowait(chunk)
-                except Exception:
-                    pass
+        self.stream_broadcaster.broadcast(chunk)
 
     def _random_dj_gap(self) -> int:
         lo = max(1, int(self.cfg.get("dj_every_n_tracks_min", 1)))
@@ -3423,6 +3402,7 @@ class RadioEngine:
         self.set_error("")
 
     def status_snapshot(self) -> Dict[str, Any]:
+        total_clients, active_clients = self.stream_broadcaster.client_counts()
         with self.plan_lock:
             plan_status = self.show_plan_status
             plan_index = self.show_plan_index
@@ -3443,8 +3423,8 @@ class RadioEngine:
                 "last_host_text": self.last_host_text,
                 "last_error": self.last_error,
                 "used_lm_model": self.used_lm_model or str(self.cfg.get("lm_model", "local-model")),
-                "total_clients": self.total_clients,
-                "active_clients": self.active_clients,
+                "total_clients": total_clients,
+                "active_clients": active_clients,
                 "tracks_played": self.tracks_played,
                 "speech_blocks_played": self.speech_blocks_played,
                 "skip_requested_by": self.skip_requested_by,
