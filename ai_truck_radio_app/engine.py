@@ -3541,7 +3541,9 @@ class RadioEngine:
         if not persistent:
             status_fn = getattr(self.tts, "runtime_status", None)
             if callable(status_fn):
-                return status_fn()
+                status = status_fn()
+                if isinstance(status, dict):
+                    return dict(status)
             return {"tts_backend": backend, "tts_ready": True, "tts_status": "on_demand"}
         worker = getattr(self.tts, worker_attr, None) if worker_attr else None
         proc = getattr(worker, "proc", None) if worker is not None else None
