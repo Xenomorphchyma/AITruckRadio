@@ -154,6 +154,20 @@ class ShowPlanRuntimeTests(unittest.TestCase):
             engine._tts_runtime_status(),
         )
 
+    def test_tts_status_uses_on_demand_prerequisite_check(self):
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.cfg = {"tts_backend": "piper", "tts_fallback_enabled": False}
+        engine.tts = type("TTS", (), {
+            "runtime_status": lambda _self: {
+                "tts_backend": "piper",
+                "tts_ready": False,
+                "tts_status": "missing_model",
+                "tts_error": "Не найдена модель Piper",
+            },
+        })()
+        self.assertEqual("missing_model", engine._tts_runtime_status()["tts_status"])
+        self.assertFalse(engine._tts_runtime_status()["tts_ready"])
+
     def test_omnivoice_service_can_start_and_stop_without_radio(self):
         engine = RadioEngine.__new__(RadioEngine)
         engine.cfg = {"tts_backend": "omnivoice", "omnivoice_persistent_worker": True, "hosts": []}

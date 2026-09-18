@@ -581,6 +581,68 @@ class TTS:
     def text_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
+    def runtime_status(self) -> Dict[str, Any]:
+        """Report cheap, local prerequisites for an on-demand backend.
+
+        This intentionally does not import a model or start a subprocess. It
+        is used by the panel to avoid advertising Piper/Silero as ready when a
+        model, helper, or executable is missing.
+        """
+        backend = str(self.cfg.get("tts_backend") or "").strip().lower()
+        if backend in {"", "none", "off", "disabled"}:
+            return {"tts_backend": backend or "none", "tts_ready": False, "tts_status": "disabled"}
+        if backend == "sapi":
+            powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+            ready = os.name == "nt" and bool(powershell)
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": "on_demand" if ready else "missing_executable",
+                **({} if ready else {"tts_error": "Не найден powershell.exe для Windows SAPI."}),
+            }
+        if backend == "piper":
+            model = Path(str(self.cfg.get("piper_model", "voices/ru_RU-ruslan-medium.onnx")))
+            if not model.is_absolute():
+                model = BASE_DIR / model
+            python = str(self.cfg.get("piper_python", ".venv\\Scripts\\python.exe")).strip()
+            python_path = Path(python) if python else Path()
+            if python_path and not python_path.is_absolute():
+                python_path = BASE_DIR / python_path
+            python_ok = bool(python_path) and executable_exists(str(python_path))
+            exe = str(self.cfg.get("piper_exe", "piper")).strip()
+            exe_ok = executable_exists(exe)
+            ready = model.is_file() and (python_ok or exe_ok)
+            if ready:
+                status, error = "on_demand", ""
+            elif not model.is_file():
+                status, error = "missing_model", f"Не найдена модель Piper: {model}"
+            else:
+                status, error = "missing_executable", "Не найден Python Piper или piper.exe."
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": status,
+                **({} if ready else {"tts_error": error}),
+            }
+        if backend == "silero":
+            helper = BASE_DIR / "tools" / "silero_render.py"
+            python = str(self.cfg.get("piper_python", ".venv\\Scripts\\python.exe")).strip() or sys.executable
+            python_path = Path(python)
+            if not python_path.is_absolute():
+                python_path = BASE_DIR / python_path
+            if not executable_exists(str(python_path)):
+                python_path = Path(sys.executable)
+            ready = helper.is_file() and executable_exists(str(python_path))
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": "on_demand" if ready else "missing_helper",
+                **({} if ready else {"tts_error": f"Не найден helper Silero: {helper}"}),
+            }
+        # Other backends expose their own worker readiness or are validated at
+        # render time. Keep the old on-demand contract for them.
+        return {"tts_backend": backend, "tts_ready": True, "tts_status": "on_demand"}
+
     def _cache_signature(self, backend: str, host_name: Optional[str], voice_cfg: Dict[str, Any]) -> str:
         """Every render-affecting setting belongs in the cache key.
 

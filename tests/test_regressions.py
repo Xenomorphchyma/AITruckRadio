@@ -211,6 +211,37 @@ def test_unknown_tts_backend_is_reported_instead_of_silently_becoming_sapi(tmp_p
     assert tts.get_or_create_mp3("Проверка") is None
 
 
+def test_tts_runtime_status_checks_piper_model_and_executable(tmp_path: Path) -> None:
+    model = tmp_path / "voice.onnx"
+    python = tmp_path / "python.exe"
+    cfg = {
+        "cache_dir": str(tmp_path / "cache"),
+        "tts_backend": "piper",
+        "piper_model": str(model),
+        "piper_python": str(python),
+        "piper_exe": str(tmp_path / "missing-piper.exe"),
+    }
+    tts = TTS(cfg)
+    assert tts.runtime_status()["tts_status"] == "missing_model"
+    model.write_bytes(b"onnx")
+    assert tts.runtime_status()["tts_status"] == "missing_executable"
+    python.write_bytes(b"stub")
+    status = tts.runtime_status()
+    assert status["tts_ready"] is True
+    assert status["tts_status"] == "on_demand"
+
+
+def test_tts_runtime_status_checks_silero_helper(tmp_path: Path, monkeypatch) -> None:
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    monkeypatch.setattr(tts_module, "BASE_DIR", tmp_path)
+    tts = TTS({"cache_dir": str(tmp_path / "cache"), "tts_backend": "silero", "piper_python": str(tmp_path / "python.exe")})
+    assert tts.runtime_status()["tts_status"] == "missing_helper"
+    (tools_dir / "silero_render.py").write_text("# test helper", encoding="utf-8")
+    (tmp_path / "python.exe").write_bytes(b"stub")
+    assert tts.runtime_status()["tts_ready"] is True
+
+
 @pytest.mark.parametrize("event_name", ["stop", "skip", "timeout"])
 def test_audio_runner_interrupts_without_stdout(event_name: str) -> None:
     runner = AudioProcessRunner()
