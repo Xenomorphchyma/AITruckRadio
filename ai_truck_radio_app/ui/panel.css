@@ -161,15 +161,20 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
   flex-direction: column;
   min-height: 0;
   padding: 20px 12px 18px;
+  overflow-y: auto;
+  scrollbar-width: thin;
   border-right: 1px solid var(--line);
   background: var(--surface);
 }
-.main-nav { display: flex; flex-direction: column; gap: 7px; }
+.main-nav { display: flex; flex-direction: column; gap: 5px; }
+.nav-group { display: flex; flex-direction: column; gap: 4px; }
+.nav-group + .nav-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.nav-group-title { margin: 0 12px 3px; color: var(--faint); font-size: 10px; font-weight: 760; letter-spacing: .09em; text-transform: uppercase; }
 .nav-item {
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 46px;
+  min-height: 43px;
   gap: 13px;
   padding: 0 14px;
   color: var(--ink-2);
@@ -197,6 +202,8 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .eyebrow { margin: 0 0 4px; color: var(--blue); font-size: 11px; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
 .page-lead { max-width: 680px; margin: 0; color: var(--muted); }
 .page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
+.save-state { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 8px; color: var(--success); border-radius: 999px; background: var(--success-soft); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.save-state.dirty { color: #8a5a0b; background: var(--warning-soft); }
 
 .air-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr); gap: 1px; margin-bottom: 24px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--line); }
 .air-primary, .air-next { padding: 28px; background: var(--surface); }
@@ -221,6 +228,15 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .compact-row b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .compact-row small { color: var(--muted); }
 .compact-row time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.air-readiness { margin-top: 18px; padding: 18px 20px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.air-readiness-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.air-readiness-head h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+.compact-readiness-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
+.compact-readiness-list li { display: grid; grid-template-columns: 18px 1fr; align-items: center; column-gap: 8px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.compact-readiness-list li .bi { color: var(--success); font-size: 14px; }
+.compact-readiness-list li.not-ready .bi { color: var(--warning); }
+.compact-readiness-list li span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.compact-readiness-list li b { grid-column: 2; overflow: hidden; margin-top: 2px; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .plan-workspace { display: grid; grid-template-columns: minmax(540px, 1fr) minmax(380px, 480px); width: 100%; height: 100%; }
 .plan-column { min-width: 0; overflow: auto; padding: 28px 30px 30px; border-right: 1px solid var(--line); scrollbar-gutter: stable; }
@@ -689,6 +705,7 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .inspector-actions .button { width: 100%; min-width: 0; }
   .inspector-actions .button.primary { grid-column: 1 / -1; margin-left: 0; }
   .readiness-list { grid-template-columns: 1fr; }
+  .compact-readiness-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .player-dock { grid-template-columns: minmax(210px,.8fr) minmax(230px,1fr) auto 150px auto 42px; }
 }
 
@@ -698,6 +715,8 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
 
 @media (max-width: 1020px) {
   :root { --sidebar-width: 76px; }
+  .nav-group-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  .nav-group + .nav-group { margin-top: 8px; padding-top: 8px; }
   .brand { justify-content: center; padding: 0 10px; }
   .brand-name { font-size: 0; }
   .brand-name::before { content: "ВFM"; font-size: 17px; }
@@ -729,6 +748,7 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .top-actions .button.primary span { display: none; }
   .top-actions .icon-button { width: 42px; }
   .sidebar { position: fixed; z-index: 80; top: var(--topbar-height); bottom: 0; left: 0; width: 250px; padding-top: 14px; box-shadow: var(--shadow-popover); transform: translateX(-105%); transition: transform 220ms ease; }
+  .nav-group-title { position: static; width: auto; height: auto; overflow: visible; clip: auto; margin-top: 4px; }
   .sidebar.open { transform: translateX(0); }
   .sidebar.open + .sidebar-scrim { position: fixed; z-index: 70; inset: var(--topbar-height) 0 0; display: block; background: rgba(16,24,40,.24); cursor: default; }
   .nav-item { justify-content: flex-start; padding: 0 14px; }
@@ -742,6 +762,8 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .readiness-panel { position: static; }
   .readiness-panel { max-height: 460px; }
   .air-grid { grid-template-columns: 1fr; }
+  .compact-readiness-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .air-readiness { padding: 16px; }
   .air-primary, .air-next { padding: 22px; }
   .host-main-grid, .host-options { grid-template-columns: 1fr; }
   .news-feed { grid-template-columns: 1fr; }
@@ -786,7 +808,11 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .inspector-actions { display: flex; align-items: stretch; flex-direction: column; }
   .inspector-actions .button, .inspector-actions .button.primary { width: 100%; margin-left: 0; }
   .readiness-list { grid-template-columns: 1fr; }
+  .compact-readiness-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .air-controls { align-items: stretch; flex-direction: column; }
+  .air-readiness-head { align-items: stretch; flex-direction: column; gap: 8px; }
+  .compact-readiness-list { grid-template-columns: 1fr 1fr; gap: 7px; }
+  .compact-readiness-list li { padding: 9px 10px; }
   .host-grid, .voice-upload-grid { grid-template-columns: 1fr; }
   .host-grid .wide, .voice-upload-grid .wide { grid-column: auto; }
   .maintenance-row { align-items: stretch; flex-direction: column; }
