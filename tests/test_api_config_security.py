@@ -7,6 +7,7 @@ import unittest
 import urllib.parse
 from http.server import HTTPServer
 from pathlib import Path
+from unittest.mock import Mock
 
 from ai_truck_radio_app.config import DEFAULT_CONFIG, save_json
 from ai_truck_radio_app.entertainment_history import _path
@@ -123,6 +124,17 @@ class ApiConfigSecurityTests(unittest.TestCase):
         status, data = self.post("/api/save_config", {"weather_city": "x"}, {"Origin": "http://evil.example"})
         self.assertEqual(403, status)
         self.assertFalse(data["ok"])
+
+    def test_clear_generated_rejects_radio_startup(self):
+        self.engine.is_running = lambda: False
+        self.engine.is_starting = lambda: True
+        self.engine.cleanup_generated_radio_files = Mock(return_value={"files": 0, "dirs": 0})
+
+        status, data = self.post("/api/clear_generated", {})
+
+        self.assertEqual(409, status)
+        self.assertFalse(data["ok"])
+        self.engine.cleanup_generated_radio_files.assert_not_called()
 
     def test_history_path_cannot_escape_cache(self):
         self.assertEqual(_path({"entertainment_history_file": "../secret.json"}).name, "entertainment_history.json")

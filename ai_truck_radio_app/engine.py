@@ -267,8 +267,16 @@ class RadioEngine:
         # Server-side callers normally stop first; this guard makes direct use
         # from integrations safe as well.
         with self.lifecycle_lock, self.plan_lock:
-            if (self.broadcast_thread and self.broadcast_thread.is_alive()) or (self.plan_prepare_thread and self.plan_prepare_thread.is_alive()):
-                log("Очистка сгенерированных файлов пропущена: эфир или подготовка плана ещё работают")
+            startup_active = bool(
+                self._startup_in_progress
+                or (self.startup_thread and self.startup_thread.is_alive())
+            )
+            if (
+                startup_active
+                or (self.broadcast_thread and self.broadcast_thread.is_alive())
+                or (self.plan_prepare_thread and self.plan_prepare_thread.is_alive())
+            ):
+                log("Очистка сгенерированных файлов пропущена: эфир, запуск или подготовка плана ещё работают")
                 return {"files": 0, "dirs": 0}
         targets = [
             self.cache_dir / "spoken",

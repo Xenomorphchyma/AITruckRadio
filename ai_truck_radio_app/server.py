@@ -315,8 +315,8 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 start_hotkey_callback(engine) if start_hotkey_callback else None
                 self.send_json({"ok": started, "started": started, "starting": engine.is_starting(), "running": engine.is_running(), "cleaned": clean}, status=202 if started else 409)
             elif path == "/api/clear_generated":
-                if engine.is_running():
-                    self.send_json({"ok": False, "error": "Сначала останови радио или используй restart."}, status=409)
+                if engine.is_running() or engine.is_starting():
+                    self.send_json({"ok": False, "error": "Сначала останови радио или дождись завершения запуска."}, status=409)
                 else:
                     stats = engine.cleanup_generated_radio_files()
                     self.send_json({"ok": True, **stats})

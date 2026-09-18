@@ -51,6 +51,18 @@ def test_normalize_config_recovers_invalid_audio_values_without_overriding_valid
     assert normalized["speech_bed_volume"] == DEFAULT_CONFIG["speech_bed_volume"]
 
 
+def test_cleanup_generated_files_does_not_race_radio_startup() -> None:
+    engine = RadioEngine.__new__(RadioEngine)
+    engine.lifecycle_lock = threading.RLock()
+    engine.plan_lock = threading.RLock()
+    engine._startup_in_progress = True
+    engine.startup_thread = None
+    engine.broadcast_thread = None
+    engine.plan_prepare_thread = None
+
+    assert engine.cleanup_generated_radio_files() == {"files": 0, "dirs": 0}
+
+
 @pytest.mark.parametrize("backend", ["none", "sapi", "piper"])
 def test_omnivoice_migration_preserves_explicit_tts_backend(backend: str) -> None:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
