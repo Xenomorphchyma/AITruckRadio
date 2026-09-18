@@ -173,6 +173,7 @@ class ShowPlanRuntimeTests(unittest.TestCase):
         engine.cfg = {"tts_backend": "omnivoice", "omnivoice_persistent_worker": True, "hosts": []}
         engine.tts_service_lock = threading.RLock()
         engine.tts_service_thread = None
+        engine.tts_service_cancel_event = threading.Event()
         engine.tts_service_status = "not_initialized"
         engine.tts_service_error = ""
 
@@ -197,6 +198,46 @@ class ShowPlanRuntimeTests(unittest.TestCase):
         stopped, _message = engine.stop_omnivoice_service()
         self.assertTrue(stopped)
         self.assertEqual("stopped", engine._tts_runtime_status()["tts_status"])
+
+    def test_omnivoice_stop_cancels_worker_that_appears_during_startup(self):
+        """A stop pressed during model loading must not publish a late worker."""
+        engine = RadioEngine.__new__(RadioEngine)
+        engine.cfg = {"tts_backend": "omnivoice", "omnivoice_persistent_worker": True, "hosts": []}
+        engine.tts_service_lock = threading.RLock()
+        engine.tts_service_thread = None
+        engine.tts_service_cancel_event = threading.Event()
+        engine.tts_service_status = "not_initialized"
+        engine.tts_service_error = ""
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowTTS:
+            omnivoice_worker = None
+
+            def start_omnivoice_worker(self, _hosts):
+                entered.set()
+                release.wait(timeout=2)
+                self.omnivoice_worker = object()
+                return True
+
+            def stop_omnivoice_worker(self):
+                self.omnivoice_worker = None
+                return True
+
+        engine.tts = SlowTTS()
+        started, _message = engine.start_omnivoice_service_async()
+        self.assertTrue(started)
+        self.assertTrue(entered.wait(timeout=1))
+
+        stopped, _message = engine.stop_omnivoice_service()
+        self.assertTrue(stopped)
+        release.set()
+        assert engine.tts_service_thread is not None
+        engine.tts_service_thread.join(timeout=2)
+
+        self.assertFalse(engine.tts_service_thread.is_alive())
+        self.assertIsNone(engine.tts.omnivoice_worker)
+        self.assertEqual("stopped", engine.tts_service_status)
 
     def test_background_plan_generation_does_not_replace_now_playing(self):
         engine = RadioEngine.__new__(RadioEngine)

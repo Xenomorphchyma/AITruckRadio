@@ -60,6 +60,7 @@ from ai_truck_radio_app.news_agent import NewsAgent
 from ai_truck_radio_app.news_history import transition_item as transition_news_item
 from ai_truck_radio_app.server import make_ets2_line
 from ai_truck_radio_app.show_plan_store import ShowPlanStore
+from ai_truck_radio_app.show_plan_editor import ShowPlanEditor
 from ai_truck_radio_app.stream_broadcaster import StreamBroadcaster
 from ai_truck_radio_app.text_processing import (
     clean_host_text,
@@ -67,7 +68,6 @@ from ai_truck_radio_app.text_processing import (
     normalize_omnivoice_nonverbal_tags,
     normalize_generated_radio_text,
     postprocess_host_text_for_air,
-    parse_dialogue_segments,
     repair_time_context_text,
     sanitize_general_radio_text,
     soften_tts_exclamations,
@@ -111,6 +111,11 @@ class RadioEngine:
         self.tts = TTS(cfg)
         self.tts_service_lock = threading.RLock()
         self.tts_service_thread: Optional[threading.Thread] = None
+        # A panel stop can race with the worker's slow model load.  Keep a
+        # cancellation signal separate from the worker object itself: during
+        # startup ``omnivoice_worker`` is still ``None``, so stopping only the
+        # current worker cannot prevent a late worker from appearing.
+        self.tts_service_cancel_event = threading.Event()
         self.tts_service_status = "not_initialized"
         self.tts_service_error = ""
         self.weather = WeatherClient(cfg)
@@ -2453,25 +2458,17 @@ class RadioEngine:
             log(f"Не удалось сохранить отредактированный план эфира: {exc}")
 
     def _show_plan_audio_is_current(self, item: PlannedItem) -> bool:
-        return item.kind == "speech" and id(item) not in self._show_plan_stale_audio_ids and item.path.is_file()
+        return ShowPlanEditor.audio_is_current(item, self._show_plan_stale_audio_ids)
 
     def get_show_plan_item_audio(self, index: int) -> Optional[Path]:
         """Return a current, generated speech file for a one-based plan index."""
         with self.plan_lock:
-            zero_index = index - 1
-            if zero_index < 0 or zero_index >= len(self.show_plan):
-                return None
-            item = self.show_plan[zero_index]
-            if not self._show_plan_audio_is_current(item):
-                return None
-            path = item.path.resolve()
-        # TTS plan audio is application-owned cache data.  Never turn an item
-        # index into an arbitrary local-file download endpoint.
-        try:
-            path.relative_to(self.cache_dir.resolve())
-        except ValueError:
-            return None
-        return path
+            return ShowPlanEditor.audio_path(
+                self.show_plan,
+                index,
+                self._show_plan_stale_audio_ids,
+                self.cache_dir,
+            )
 
     def update_show_plan_item_text(self, index: int, text: str, *, rerender: bool) -> Dict[str, Any]:
         """Edit a future speech item and either render matching audio or invalidate it.
@@ -2536,64 +2533,20 @@ class RadioEngine:
 
     def mutate_show_plan_item(self, index: int, action: str, *, target_index: int = 0) -> Dict[str, Any]:
         """Apply a safe structural edit to a future show-plan item."""
-        action = str(action or "").strip().lower()
-        if action not in {"duplicate", "insert_after", "delete", "move"}:
-            raise ValueError("Неизвестное действие с элементом шоу-плана.")
-        zero_index = index - 1
         with self.plan_lock:
-            if zero_index < 0 or zero_index >= len(self.show_plan):
-                raise ValueError("Элемент шоу-плана не найден.")
-            if zero_index <= self.show_plan_active_index or zero_index < self.show_plan_index:
-                raise ValueError("Нельзя менять уже идущий или завершённый элемент эфира.")
-            item = self.show_plan[zero_index]
-
-            if action == "delete":
-                removed = self.show_plan.pop(zero_index)
-                self._show_plan_stale_audio_ids.discard(id(removed))
-                selected_index = min(index, len(self.show_plan))
-            elif action == "move":
-                target_zero = target_index - 1
-                if target_zero < self.show_plan_index or target_zero >= len(self.show_plan):
-                    raise ValueError("Переместить блок можно только в будущую часть плана.")
-                moved = self.show_plan.pop(zero_index)
-                self.show_plan.insert(target_zero, moved)
-                selected_index = target_zero + 1
-            else:
-                if action == "insert_after":
-                    source = item if item.kind == "speech" else next(
-                        (candidate for candidate in self.show_plan if candidate.kind == "speech"),
-                        None,
-                    )
-                    if source is None:
-                        raise ValueError("В плане нет речевого блока, из которого можно создать черновик.")
-                    clone = PlannedItem(
-                        kind="speech",
-                        path=source.path,
-                        title="Новая реплика ведущего",
-                        text="Введите текст новой реплики.",
-                        duration_sec=source.duration_sec,
-                    )
-                    self._show_plan_stale_audio_ids.add(id(clone))
-                else:
-                    clone = PlannedItem(
-                        kind=item.kind,
-                        path=item.path,
-                        title=item.title,
-                        text=item.text,
-                        duration_sec=item.duration_sec,
-                        history_keys=list(item.history_keys),
-                        news_items=[dict(news) for news in item.news_items],
-                    )
-                    if id(item) in self._show_plan_stale_audio_ids:
-                        self._show_plan_stale_audio_ids.add(id(clone))
-                self.show_plan.insert(zero_index + 1, clone)
-                selected_index = index + 1
-
+            result = ShowPlanEditor.mutate(
+                self.show_plan,
+                self._show_plan_stale_audio_ids,
+                index=index,
+                action=action,
+                target_index=target_index,
+                active_index=self.show_plan_active_index,
+                next_index=self.show_plan_index,
+            )
             self.show_plan_status = "шоу-план обновлён"
-            count = len(self.show_plan)
         self._save_current_show_plan()
         self._sync_tts_cache_protection()
-        return {"action": action, "selected_index": selected_index, "count": count}
+        return result
 
     def _build_preplanned_show(self, generation: Optional[int] = None) -> List[PlannedItem]:
         """Serialize expensive plan rendering; stale jobs must not publish output."""
@@ -3583,6 +3536,7 @@ class RadioEngine:
             if runtime.get("tts_ready"):
                 self.tts_service_status = "ready"
                 return False, "OmniVoice уже запущен."
+            self.tts_service_cancel_event.clear()
             self.tts_service_status = "starting"
             self.tts_service_error = ""
 
@@ -3596,6 +3550,19 @@ class RadioEngine:
                 except Exception as exc:
                     error = str(exc)
                     log(f"OmniVoice panel start failed: {exc}")
+                # ``stop_omnivoice_service`` may have run while model loading
+                # was still in progress, before ``omnivoice_worker`` existed.
+                # Tear down a worker that appeared after that stop request and
+                # never publish a misleading ready state.
+                if self.tts_service_cancel_event.is_set():
+                    try:
+                        self.tts.stop_omnivoice_worker()
+                    except Exception as exc:
+                        log(f"OmniVoice late-stop failed: {exc}")
+                    with self.tts_service_lock:
+                        self.tts_service_status = "stopped"
+                        self.tts_service_error = ""
+                    return
                 with self.tts_service_lock:
                     if self.tts_service_status != "stopping":
                         self.tts_service_status = "ready" if ok else "error"
@@ -3608,6 +3575,7 @@ class RadioEngine:
     def stop_omnivoice_service(self) -> tuple[bool, str]:
         """Stop/cancel OmniVoice while leaving the radio process itself intact."""
         with self.tts_service_lock:
+            self.tts_service_cancel_event.set()
             self.tts_service_status = "stopping"
             self.tts_service_error = ""
             worker = self.tts.omnivoice_worker
@@ -3622,33 +3590,5 @@ class RadioEngine:
     def _show_plan_preview(
         self, items: List[PlannedItem], active_index: int, stale_audio_ids: set[int]
     ) -> List[Dict[str, Any]]:
-        """Return complete scripts while bounding the status response globally."""
-        item_limit = max(1, int(self.cfg.get("show_plan_preview_items", 80) or 80))
-        char_limit = max(4_000, int(self.cfg.get("show_plan_preview_max_chars", 120_000) or 120_000))
-        result: List[Dict[str, Any]] = []
-        used_chars = 0
-        for i, item in enumerate(items[:item_limit]):
-            text = item.text or ""
-            hosts: List[str] = []
-            if item.kind == "speech":
-                for host, _spoken in parse_dialogue_segments(text, self.cfg.get("hosts") or []):
-                    clean_host = str(host or "").strip()
-                    if clean_host and clean_host not in hosts:
-                        hosts.append(clean_host)
-            # Do not truncate an individual script: omit later preview entries
-            # instead, so an editor can never save a truncated text back.
-            if result and used_chars + len(text) > char_limit:
-                break
-            used_chars += len(text)
-            result.append({
-                "idx": i + 1,
-                "kind": item.kind,
-                "title": item.title,
-                "duration_sec": round(float(item.duration_sec or 0.0), 1),
-                "text": text,
-                "hosts": hosts,
-                "active": i == active_index,
-                "audio_ready": item.kind == "speech" and id(item) not in stale_audio_ids and item.path.is_file(),
-            })
-        return result
+        return ShowPlanEditor.preview(items, active_index, stale_audio_ids, self.cfg)
 
