@@ -10,6 +10,7 @@
   "shuffle": true,
   "ffmpeg_path": "ffmpeg",
   "ffprobe_path": "",
+  "ffmpeg_idle_timeout_sec": 30.0,
   "lm_enabled": true,
   "lm_base_url": "http://127.0.0.1:1234/v1",
   "lm_model": "local-model",

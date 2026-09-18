@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ai_truck_radio_app.config import (
     BASE_DIR,
@@ -38,6 +38,21 @@ from ai_truck_radio_app.ref_voice import validate_reference_transcript
 
 def host_name_or_empty(host_name: Optional[str]) -> str:
     return "" if host_name is None else str(host_name)
+
+
+def _audio_file_ready(path: Path, *, minimum_size: int = 1024) -> bool:
+    """Return whether a subprocess produced a usable audio file.
+
+    Several TTS backends report success through their process exit code before
+    the output file is flushed.  Treating an empty/partial file as a valid WAV
+    makes the failure surface later in FFmpeg and obscures the backend error.
+    A conservative size check is backend-neutral and still allows short test
+    phrases to pass.
+    """
+    try:
+        return path.is_file() and path.stat().st_size >= minimum_size
+    except OSError:
+        return False
 
 
 class Qwen3TTSWorkerClient:
@@ -534,6 +549,20 @@ class TTS:
         self.qwen3_worker: Optional[Qwen3TTSWorkerClient] = None
         self.omnivoice_worker: Optional[OmniVoiceWorkerClient] = None
         self.cache_lock = threading.RLock()
+        self.protected_cache_paths: set[Path] = set()
+        self.cache_paths_provider: Optional[Callable[[], List[Path]]] = None
+        self._cache_cleanup_depth = 0
+
+    def set_protected_cache_paths(self, paths: List[Path]) -> None:
+        """Keep files referenced by an active/queued plan during cache cleanup."""
+        with self.cache_lock:
+            protected: set[Path] = set()
+            for path in paths:
+                try:
+                    protected.add(Path(path).resolve())
+                except OSError:
+                    continue
+            self.protected_cache_paths = protected
 
     def close(self) -> None:
         if self.qwen3_worker is not None:
@@ -649,6 +678,19 @@ class TTS:
         return True
 
     def get_or_create_dialogue_mp3(self, text: str, hosts: List[Dict[str, Any]]) -> Optional[Path]:
+        # A small cache must not evict the first speaker while the second one
+        # is being rendered. Serialize synthesis and clean only after concat.
+        with self.cache_lock:
+            self._cache_cleanup_depth += 1
+            result: Optional[Path] = None
+            try:
+                result = self._get_or_create_dialogue_mp3(text, hosts)
+                return result
+            finally:
+                self._cache_cleanup_depth -= 1
+                self.cleanup_cache(keep=[result] if result else [])
+
+    def _get_or_create_dialogue_mp3(self, text: str, hosts: List[Dict[str, Any]]) -> Optional[Path]:
         if not self.cfg.get("tts_dialogue_split_hosts", True):
             return self.get_or_create_mp3(strip_spoken_host_names(text, [str(h.get("name", "")) for h in hosts if isinstance(h, dict)]))
         segments = parse_dialogue_segments(text, hosts)
@@ -771,7 +813,7 @@ class TTS:
                     wav_path = self._f5_tts_to_wav(text, h, voice_cfg)
                 else:
                     wav_path = self._sapi_to_wav(text, h, voice_cfg)
-                if not wav_path or not wav_path.exists():
+                if not wav_path or not _audio_file_ready(wav_path):
                     last_error = f"{backend}: wav не создан"
                     log(f"TTS {backend}: wav не создан")
                     continue
@@ -787,7 +829,7 @@ class TTS:
                 log(f"TTS {backend} ошибка: {e}")
                 log(traceback.format_exc())
             finally:
-                self.cleanup_cache()
+                self.cleanup_cache(keep=[out_mp3])
         if last_error:
             log(f"TTS: все backend'ы не смогли озвучить реплику. Последнее: {last_error}")
         return None
@@ -830,6 +872,9 @@ $synth.Dispose()
             log("PowerShell/SAPI не смог создать озвучку:")
             log(res.stderr.strip() or res.stdout.strip())
             return None
+        if not _audio_file_ready(wav_path):
+            log("PowerShell/SAPI завершился без пригодного WAV-файла")
+            return None
         return wav_path
 
     def _piper_to_wav(self, text: str, h: str, voice_cfg: Dict[str, Any]) -> Optional[Path]:
@@ -860,7 +905,7 @@ $synth.Dispose()
             cmd.extend(extra_args)
             cmd.extend(["--", text])
             res = run_subprocess(cmd, timeout=90)
-            if res.returncode == 0 and wav_path.exists():
+            if res.returncode == 0 and _audio_file_ready(wav_path):
                 return wav_path
             log("Piper через python -m piper не смог создать озвучку:")
             log((res.stderr or res.stdout).strip())
@@ -891,6 +936,9 @@ $synth.Dispose()
         if proc.returncode != 0:
             log("Piper не смог создать озвучку:")
             log((err or out).strip())
+            return None
+        if not _audio_file_ready(wav_path):
+            log("Piper завершился без пригодного WAV-файла")
             return None
         return wav_path
 
@@ -1032,7 +1080,7 @@ $synth.Dispose()
         if bool(voice_cfg.get("silero_put_yo", True)):
             cmd.append("--put-yo")
         res = run_subprocess(cmd, timeout=240)
-        if res.returncode != 0 or not wav_path.exists():
+        if res.returncode != 0 or not _audio_file_ready(wav_path):
             log("Silero не смог создать озвучку:")
             log((res.stderr or res.stdout).strip())
             log("Подсказка: запусти install_silero_windows.bat. Если исходники Silero лежат не в папке проекта, укажи silero_repo_dir в config.json.")
@@ -1238,14 +1286,47 @@ $synth.Dispose()
             return False
         return out_mp3.exists() and out_mp3.stat().st_size > 1024
 
-    def cleanup_cache(self) -> None:
+    def cleanup_cache(self, *, keep: Optional[List[Path]] = None) -> None:
+        try:
+            active_paths = self.cache_paths_provider() if self.cache_paths_provider else []
+        except Exception as exc:
+            log(f"Очистка TTS-кэша пропущена: не удалось получить активные файлы: {exc}")
+            return
+        with self.cache_lock:
+            if self._cache_cleanup_depth:
+                return
+            self._cleanup_cache_locked([*(keep or []), *active_paths])
+
+    def _cleanup_cache_locked(self, keep: List[Path]) -> None:
         max_files = max(1, int(self.cfg.get("max_cached_spoken_files", 120)))
         files = sorted(
             list(self.cache_dir.glob("host_*.mp3")) + list(self.cache_dir.glob("dialogue_*.mp3")),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        for p in files[max_files:]:
+        with self.cache_lock:
+            protected = set(self.protected_cache_paths)
+        protected.update(path.resolve() for path in keep)
+        # Persisted plans are protected as well, including plans restored after
+        # an application restart when the engine has not yet rebuilt its index.
+        plan_files = set((self.cache_dir.parent / "show_plans").glob("*.json"))
+        configured_plan = Path(str(self.cfg.get("show_plan_output_file", "cache/show_plans/last_show_plan.json")))
+        if not configured_plan.is_absolute():
+            configured_plan = BASE_DIR / configured_plan
+        plan_files.add(configured_plan)
+        for plan_file in plan_files:
+            try:
+                payload = json.loads(plan_file.read_text(encoding="utf-8"))
+                for item in payload.get("items", []) if isinstance(payload, dict) else []:
+                    if isinstance(item, dict) and item.get("kind") == "speech":
+                        candidate = Path(str(item.get("path") or ""))
+                        if not candidate.is_absolute():
+                            candidate = self.cache_dir.parent / candidate
+                        protected.add(candidate.resolve())
+            except (OSError, ValueError, TypeError):
+                continue
+        removable = [p for p in files if p.resolve() not in protected]
+        for p in removable[max_files:]:
             try:
                 p.unlink()
             except Exception:

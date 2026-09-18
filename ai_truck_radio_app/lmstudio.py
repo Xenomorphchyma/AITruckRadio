@@ -439,6 +439,21 @@ class LMStudioClient:
                 raise RuntimeError("LM Studio вернул пустой choices")
             msg = choices[0].get("message") or {}
             raw_text = str(msg.get("content") or "").strip()
+            # Some local models spend the complete budget in hidden reasoning
+            # and return an empty visible answer with ``finish_reason=length``.
+            # A single bounded retry with reasoning disabled keeps a live break
+            # from disappearing while retaining the user's normal setting for
+            # successful responses.
+            finish_reason = str(choices[0].get("finish_reason") or "").lower()
+            if not raw_text and (msg.get("reasoning_content") or finish_reason == "length"):
+                retry_payload = dict(payload)
+                retry_payload["reasoning_effort"] = "none"
+                retry_payload["max_tokens"] = max(96, min(760, int(payload.get("max_tokens") or 360)))
+                retry_data = self._request_json("POST", f"{self.base_url}/chat/completions", retry_payload)
+                retry_choices = retry_data.get("choices") or []
+                if retry_choices:
+                    msg = retry_choices[0].get("message") or {}
+                    raw_text = str(msg.get("content") or "").strip()
             cleaned = sanitize_general_radio_text(
                 clean_host_text(raw_text, int(self.cfg.get("max_host_text_chars", 4000) or 4000))
             )

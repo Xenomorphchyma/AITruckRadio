@@ -47,6 +47,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     "ffmpeg_path": "ffmpeg",
     "ffprobe_path": "",  # пусто = попробовать ffprobe рядом с ffmpeg или из PATH
+    "ffmpeg_idle_timeout_sec": 30.0,
 
     "lm_enabled": True,
     "lm_base_url": "http://127.0.0.1:1234/v1",
@@ -590,6 +591,17 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     default_hosts = DEFAULT_CONFIG.get("hosts") or []
     legacy_name_map = {"Макс": "Максим", "Лина": "Ирина"}
 
+    def valid_number(key: str) -> None:
+        """Keep an explicit numeric value, but recover safely from hand-edited text."""
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            cfg[key] = DEFAULT_CONFIG[key]
+            return
+        if number != number or number in {float("inf"), float("-inf")}:
+            cfg[key] = DEFAULT_CONFIG[key]
+
     def host_keys(h: Dict[str, Any]) -> List[str]:
         keys = []
         name = str(h.get("name", "")).strip()
@@ -747,11 +759,7 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("host_duo_intro_in_mostly_solo", True)
     cfg.setdefault("strict_duo_intro_require_both", True)
     cfg.setdefault("strict_duo_intro_retry_attempts", 3)
-    try:
-        if float(cfg.get("speech_takeover_sec", 4.0) or 4.0) <= 1.2:
-            cfg["speech_takeover_sec"] = 4.0
-    except Exception:
-        cfg["speech_takeover_sec"] = 4.0
+    cfg.setdefault("speech_takeover_sec", DEFAULT_CONFIG["speech_takeover_sec"])
     cfg.setdefault("track_profiles_deezer_enabled", True)
     cfg.setdefault("track_profiles_itunes_enabled", True)
     cfg.setdefault("track_profiles_enrich_only_if_no_sources", True)
@@ -800,10 +808,12 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("show_plan_include_intro", True)
     cfg.setdefault("show_plan_rebuild_on_start", True)
     cfg.setdefault("speech_bed_mode", "generated")
-    cfg["speech_voice_volume"] = max(float(cfg.get("speech_voice_volume", 1.0) or 1.0), 1.40)
+    cfg.setdefault("speech_voice_volume", DEFAULT_CONFIG["speech_voice_volume"])
     cfg.setdefault("music_volume", 0.78)
-    cfg["speech_bed_volume"] = min(float(cfg.get("speech_bed_volume", 0.09) or 0.09), 0.08)
-    cfg["speech_loudnorm_i"] = max(float(cfg.get("speech_loudnorm_i", -12.5) or -12.5), -12.5)
+    cfg.setdefault("speech_bed_volume", DEFAULT_CONFIG["speech_bed_volume"])
+    cfg.setdefault("speech_loudnorm_i", DEFAULT_CONFIG["speech_loudnorm_i"])
+    for numeric_key in ("speech_takeover_sec", "speech_voice_volume", "speech_bed_volume", "speech_loudnorm_i"):
+        valid_number(numeric_key)
     cfg.setdefault("exact_hour_time_announce_enabled", True)
     cfg.setdefault("listener_greetings_enabled", True)
     if str(cfg.get("news_file", "news.txt")).strip().lower() == "news.txt":

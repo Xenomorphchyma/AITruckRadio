@@ -29,6 +29,18 @@ SKIP_DOMAINS = {
 }
 
 
+class _PublicRedirect(urllib.request.HTTPRedirectHandler):
+    """Validate each redirect before urllib opens its target connection."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        if not _public_url(newurl):
+            raise ValueError("redirected to a non-public URL")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_PublicRedirect)
+
+
 class SearchParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -146,7 +158,8 @@ def _public_url(url: str) -> bool:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
-        for info in socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM):
+        default_port = 80 if parsed.scheme == "http" else 443
+        for info in socket.getaddrinfo(parsed.hostname, parsed.port or default_port, type=socket.SOCK_STREAM):
             if not ipaddress.ip_address(info[4][0]).is_global:
                 return False
         return True
@@ -171,7 +184,7 @@ def _fetch(url: str, timeout: int, max_bytes: int) -> tuple[bytes, str]:
         url,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "ru,en;q=0.8"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec B310
+    with _SAFE_OPENER.open(req, timeout=timeout) as response:  # nosec B310
         if not _public_url(response.geturl()):
             raise ValueError("redirected to a non-public URL")
         content_type = str(response.headers.get("Content-Type") or "").lower()

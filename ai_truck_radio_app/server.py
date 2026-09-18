@@ -5,9 +5,10 @@ import json
 import ipaddress
 import math
 import mimetypes
-import re
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
+from email.parser import BytesParser
+from email import policy
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 
@@ -15,15 +16,14 @@ from ai_truck_radio_app.config import (
     BASE_DIR,
     APP_NAME,
     APP_VERSION,
-    CONFIG_PATH,
     DEFAULT_CONFIG,
     log,
-    save_json,
 )
 from ai_truck_radio_app.entertainment_history import clear_history
 from ai_truck_radio_app.panel import render_panel
 from ai_truck_radio_app.ref_voice import inspect_reference_pair, transcribe_reference_audio, write_reference_files
 from ai_truck_radio_app.settings_profiles import SettingsProfileStore
+from ai_truck_radio_app.settings_schema import settings_schema, validate_setting_updates
 
 
 MAX_FORM_BYTES = 1 * 1024 * 1024
@@ -127,48 +127,31 @@ def parse_post(handler: BaseHTTPRequestHandler) -> Dict[str, str]:
     return {k: v[-1] if v else "" for k, v in parsed.items()}
 
 
-def _parse_disposition(value: str) -> Dict[str, str]:
-    result: Dict[str, str] = {}
-    for item in value.split(";"):
-        item = item.strip()
-        if "=" not in item:
-            continue
-        key, raw_value = item.split("=", 1)
-        result[key.strip().lower()] = raw_value.strip().strip('"')
-    return result
-
-
 def parse_multipart(handler: BaseHTTPRequestHandler) -> tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
     content_type = handler.headers.get("Content-Type", "")
-    match = re.search(r'boundary="?([^";]+)"?', content_type)
-    if not match:
-        raise ValueError("Multipart boundary не найден.")
-    boundary = ("--" + match.group(1)).encode("utf-8")
     length = _content_length(handler, MAX_UPLOAD_BYTES)
     raw = handler.rfile.read(length) if length > 0 else b""
+    message = BytesParser(policy=policy.default).parsebytes(
+        ("Content-Type: " + content_type + "\r\nMIME-Version: 1.0\r\n\r\n").encode("utf-8") + raw
+    )
+    if message.get_content_type() != "multipart/form-data" or not message.is_multipart() or message.defects:
+        raise ValueError("Некорректный multipart-запрос или boundary.")
     fields: Dict[str, str] = {}
     files: Dict[str, Dict[str, Any]] = {}
-    for part in raw.split(boundary):
-        part = part.strip(b"\r\n")
-        if not part or part == b"--" or part.endswith(b"--") and b"\r\n\r\n" not in part:
+    for part in message.iter_parts():
+        if part.defects or part.is_multipart():
+            raise ValueError("Некорректная часть multipart-запроса.")
+        if part.get_content_disposition() != "form-data":
             continue
-        header_blob, sep, body = part.partition(b"\r\n\r\n")
-        if not sep:
+        name = part.get_param("name", header="content-disposition")
+        if not isinstance(name, str) or not name:
             continue
-        headers: Dict[str, str] = {}
-        for line in header_blob.decode("utf-8", errors="replace").split("\r\n"):
-            if ":" in line:
-                key, value = line.split(":", 1)
-                headers[key.strip().lower()] = value.strip()
-        disp = _parse_disposition(headers.get("content-disposition", ""))
-        name = disp.get("name", "")
-        if not name:
-            continue
-        if body.endswith(b"\r\n"):
-            body = body[:-2]
-        filename = disp.get("filename")
+        body = part.get_payload(decode=True)
+        if not isinstance(body, bytes):
+            raise ValueError("Некорректные данные multipart-запроса.")
+        filename = part.get_filename()
         if filename is not None:
-            files[name] = {"filename": filename, "content": body, "content_type": headers.get("content-type", "")}
+            files[name] = {"filename": filename, "content": body, "content_type": part.get_content_type()}
         else:
             fields[name] = body.decode("utf-8", errors="replace")
     return fields, files
@@ -212,6 +195,10 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
+            # Only the stream can be exposed to ordinary external audio players.
+            # HTML embeds the same private configuration as the management API.
+            if path != "/stream.mp3" and not self._local_request_allowed():
+                return
             if path in ["/", "/index.html"]:
                 self.send_html()
             elif path == "/stream.mp3":
@@ -232,6 +219,8 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 self.send_audio_file(audio_path)
             elif path == "/api/config/defaults":
                 self.send_json({"ok": True, "defaults": DEFAULT_CONFIG})
+            elif path == "/api/config/schema":
+                self.send_json({"ok": True, "schema": settings_schema(DEFAULT_CONFIG)})
             elif path == "/api/settings_profiles":
                 self.send_json({"ok": True, "profiles": profile_store.list_profiles()})
             elif path == "/api/reference_voice/quality":
@@ -456,8 +445,7 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 except Exception:
                     limit = None
                 force_existing = bool_from_form(form.get("force_existing")) if "force_existing" in form else bool(engine.cfg.get("track_profiles_force_rebuild_existing", False))
-                engine.cfg["track_profiles_force_rebuild_existing"] = force_existing
-                save_json(CONFIG_PATH, engine.cfg)
+                engine.update_config({"track_profiles_force_rebuild_existing": force_existing})
                 ok = engine.start_track_profiles_build(limit, force_existing=force_existing)
                 self.send_json({"ok": True, "started": ok, "status": engine.track_profile_status, "force_existing": force_existing})
             elif path == "/api/track_profiles/cancel":
@@ -512,8 +500,7 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 item = engine.set_news_item_status(form.get("draft_id", ""), form.get("status", ""))
                 self.send_json({"ok": True, "item": item})
             elif path == "/api/show_plan/disable":
-                engine.cfg["show_plan_enabled"] = False
-                save_json(CONFIG_PATH, engine.cfg)
+                engine.update_config({"show_plan_enabled": False})
                 with engine.plan_lock:
                     engine.show_plan_status = "переключаюсь в live-режим; текущий трек/речь аккуратно завершится или будет пропущен"
                 engine.skip_event.set()
@@ -523,9 +510,7 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                     have_plan = bool(engine.show_plan and engine.show_plan_index < len(engine.show_plan))
                     engine.show_plan_status = "плановый режим включён; готовый план будет взят после текущего элемента" if have_plan else "готового плана нет, запускаю подготовку до включения режима"
                 if have_plan:
-                    engine.cfg["show_plan_enabled"] = True
-                    engine.cfg["show_plan_rebuild_on_start"] = False
-                    save_json(CONFIG_PATH, engine.cfg)
+                    engine.update_config({"show_plan_enabled": True, "show_plan_rebuild_on_start": False})
                 else:
                     engine.start_show_plan_generation(None)
                 if have_plan:
@@ -578,44 +563,45 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 if "hosts_json" in form:
                     try:
                         hosts_data = json.loads(form.get("hosts_json") or "[]")
-                        if isinstance(hosts_data, list):
-                            clean_hosts = []
-                            for h in hosts_data:
-                                if not isinstance(h, dict):
-                                    continue
-                                nm = str(h.get("name", "")).strip()
-                                if not nm:
-                                    continue
-                                aliases_raw = h.get("aliases")
-                                if isinstance(aliases_raw, str):
-                                    aliases = [x.strip() for x in aliases_raw.split(",") if x.strip()]
-                                elif isinstance(aliases_raw, list):
-                                    aliases = [str(x).strip() for x in aliases_raw if str(x).strip()]
-                                else:
-                                    aliases = []
-                                # Host profiles contain backend-specific fields
-                                # that evolve independently. Preserve every
-                                # JSON-safe supplied field instead of silently
-                                # erasing voices/personas unknown to this server.
-                                clean = _json_safe_value(dict(h), "hosts")
-                                clean["name"] = nm
-                                clean["aliases"] = aliases
-                                for flag in ("enabled", "intro_enabled", "regular_enabled"):
-                                    if flag in clean:
-                                        value = clean[flag]
-                                        clean[flag] = bool_from_form(value) if isinstance(value, str) else bool(value)
-                                try:
-                                    weight = float(clean.get("air_weight", 1.0) or 1.0)
-                                except (TypeError, ValueError):
-                                    raise ValueError("air_weight ведущего должен быть числом.")
-                                if not math.isfinite(weight) or not 0.01 <= weight <= 100.0:
-                                    raise ValueError("air_weight ведущего должен быть в диапазоне 0.01–100.")
-                                clean["air_weight"] = weight
-                                clean_hosts.append(clean)
-                            if clean_hosts:
-                                updates["hosts"] = clean_hosts
-                    except Exception as e:
-                        log(f"Не удалось разобрать hosts_json из панели: {e}")
+                    except json.JSONDecodeError as exc:
+                        raise ValueError("hosts_json должен содержать корректный JSON-массив ведущих.") from exc
+                    if not isinstance(hosts_data, list):
+                        raise ValueError("hosts_json должен содержать JSON-массив ведущих.")
+                    clean_hosts = []
+                    for h in hosts_data:
+                        if not isinstance(h, dict):
+                            raise ValueError("Каждый профиль ведущего должен быть JSON-объектом.")
+                        nm = str(h.get("name", "")).strip()
+                        if not nm:
+                            raise ValueError("У каждого ведущего должно быть непустое имя.")
+                        aliases_raw = h.get("aliases")
+                        if isinstance(aliases_raw, str):
+                            aliases = [x.strip() for x in aliases_raw.split(",") if x.strip()]
+                        elif isinstance(aliases_raw, list):
+                            aliases = [str(x).strip() for x in aliases_raw if str(x).strip()]
+                        else:
+                            aliases = []
+                        # Host profiles contain backend-specific fields
+                        # that evolve independently. Preserve every
+                        # JSON-safe supplied field instead of silently
+                        # erasing voices/personas unknown to this server.
+                        clean = _json_safe_value(dict(h), "hosts")
+                        clean["name"] = nm
+                        clean["aliases"] = aliases
+                        for flag in ("enabled", "intro_enabled", "regular_enabled"):
+                            if flag in clean:
+                                value = clean[flag]
+                                clean[flag] = bool_from_form(value) if isinstance(value, str) else bool(value)
+                        try:
+                            weight = float(clean.get("air_weight", 1.0) or 1.0)
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError("air_weight ведущего должен быть числом.") from exc
+                        if not math.isfinite(weight) or not 0.01 <= weight <= 100.0:
+                            raise ValueError("air_weight ведущего должен быть в диапазоне 0.01–100.")
+                        clean["air_weight"] = weight
+                        clean_hosts.append(clean)
+                    if clean_hosts:
+                        updates["hosts"] = clean_hosts
                 checkbox_keys_all = ["weather_enabled", "news_enabled", "news_agent_enabled", "news_agent_generate_before_radio", "news_agent_factcheck_enabled", "news_agent_structured_output", "news_agent_no_think", "two_hosts_enabled", "tts_speak_host_names", "fade_enabled", "speech_takeover_enabled", "speech_takeover_only_if_prepared", "speech_takeover_crossfade_enabled", "track_profiles_enabled", "track_profiles_web_lookup_enabled", "track_profiles_agent_factcheck_enabled", "track_profiles_agent_append_no_think", "track_profiles_agent_structured_output", "night_mode_enabled", "hotkey_enabled", "lm_enabled", "lm_append_no_think", "lm_compact_host_prompt", "intro_before_first_track", "startup_intro_blocking", "async_prepare_dj", "qwen3_tts_persistent_worker", "show_experimental_tts_backends", "omnivoice_persistent_worker", "omnivoice_prewarm_on_radio_start", "omnivoice_normalize_ru", "omnivoice_nonverbal_tags_enabled", "reference_asr_enabled", "reference_asr_review_enabled", "reference_asr_keep_model_loaded", "speech_radio_processing_enabled", "speech_compressor_enabled", "speech_presence_eq_enabled", "speech_loudnorm_enabled", "speech_limiter_enabled", "jingle_enabled", "auto_generate_sweep_jingle", "show_plan_enabled", "show_plan_block_until_ready", "show_plan_include_intro", "show_plan_rebuild_on_start", "show_plan_restore_on_start", "show_plan_continuous_extend", "show_plan_live_after_exhausted", "show_plan_intro_long_opening", "show_plan_unique_greetings", "show_plan_fill_music_while_generating", "show_plan_auto_enable_after_generation", "exact_hour_time_announce_enabled", "listener_greetings_enabled", "tts_parse_validation_enabled", "radio_autostart", "clean_generated_on_start", "clean_generated_on_restart", "station_id_enabled", "station_id_fallback_tts_enabled", "live_blocking_dj_when_due", "live_prepare_at_track_start_when_due", "startup_intro_reserve_first_track", "host_should_use_stress_marks", "host_duo_intro_in_mostly_solo", "strict_duo_intro_require_both", "avoid_road_cliche_prompt", "season_reality_guard_enabled", "host_creative_fact_mode", "host_strict_clock_guard", "live_expected_speech_time_enabled", "omnivoice_prewarm_on_radio_start", "entertainment_enabled", "entertainment_in_live", "entertainment_in_planned", "horoscope_enabled", "horoscope_generate_before_radio", "riddles_enabled", "wrong_answer_game_enabled", "entertainment_generate_with_lm", "entertainment_status_in_panel", "guest_enabled", "guest_in_live", "guest_in_planned", "guest_generate_before_radio", "guest_allow_unverified_lm", "guest_voice_warning_in_panel", "track_profiles_wikipedia_enabled", "track_profiles_wikidata_enabled", "track_profiles_deezer_enabled", "track_profiles_itunes_enabled", "track_profiles_enrich_missing_web_only", "track_profiles_enrich_only_if_no_sources"]
                 checkbox_keys_all += [
                     "entertainment_agent_enabled",
@@ -665,14 +651,21 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                 # setting even when a newer panel exposes a field before this
                 # server's hand-written lists have been updated. Unknown keys
                 # remain ignored, preventing arbitrary config injection.
+                schema = settings_schema(DEFAULT_CONFIG)
                 for key, raw in form.items():
                     if key in updates or key not in DEFAULT_CONFIG:
                         continue
                     default = DEFAULT_CONFIG[key]
+                    spec = schema.get(key, {})
                     if isinstance(default, bool):
                         updates[key] = bool_from_form(raw)
                     elif isinstance(default, int) and not isinstance(default, bool):
-                        value = _finite_number(raw, key, minimum=0, maximum=1_000_000)
+                        value = _finite_number(
+                            raw,
+                            key,
+                            minimum=float(spec.get("min", 0)),
+                            maximum=float(spec.get("max", 1_000_000)),
+                        )
                         if not value.is_integer():
                             raise ValueError(f"{key} должен быть целым числом.")
                         updates[key] = int(value)
@@ -682,8 +675,12 @@ def make_handler(engine: Any, cfg: Dict[str, Any], start_hotkey_callback: Option
                         if len(raw) > 16_000:
                             raise ValueError(f"{key} слишком длинный.")
                         updates[key] = raw.strip()
+                # Apply one shared schema pass after all form-specific parsing.
+                # This keeps forward-compatible fields under the same range
+                # contract as the older hand-written lists above.
+                updates = validate_setting_updates(updates, DEFAULT_CONFIG)
                 engine.update_config(updates)
-                self.send_json({"ok": True, "updates": updates})
+                self.send_json({"ok": True, "updates": {key: engine.cfg.get(key) for key in updates}})
             else:
                 self.send_json({"ok": False, "error": "Маршрут не найден."}, status=404)
 

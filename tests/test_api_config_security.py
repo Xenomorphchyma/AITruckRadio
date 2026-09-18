@@ -55,6 +55,14 @@ class ApiConfigSecurityTests(unittest.TestCase):
         conn.close()
         return response.status, payload
 
+    def get(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port)
+        conn.request("GET", path, headers={"Host": f"127.0.0.1:{self.server.server_port}"})
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        return response.status, payload
+
     def test_save_config_is_partial_and_accepts_explicit_false(self):
         status, data = self.post("/api/save_config", {"weather_city": "Владивосток"})
         self.assertEqual(200, status)
@@ -81,6 +89,35 @@ class ApiConfigSecurityTests(unittest.TestCase):
         self.assertEqual(400, status)
         status, _ = self.post("/api/save_config", {"entertainment_history_file": "../outside.json"})
         self.assertEqual(400, status)
+
+    def test_schema_ranges_cover_forward_compatible_numeric_fields(self):
+        status, payload = self.get("/api/config/schema")
+        self.assertEqual(200, status)
+        schema = payload["schema"]
+        self.assertEqual({"min": 1, "max": 65535}, {k: schema["port"][k] for k in ("min", "max")})
+        self.assertEqual({"min": 0, "max": 1}, {k: schema["time_context_chance"][k] for k in ("min", "max")})
+        self.assertEqual({"min": 0, "max": 1}, {k: schema["reference_asr_review_consensus_similarity"][k] for k in ("min", "max")})
+
+        for key, value in (("port", "70000"), ("time_context_chance", "-0.1"), ("reference_asr_review_consensus_similarity", "1.1")):
+            status, data = self.post("/api/save_config", {key: value})
+            self.assertEqual(400, status, key)
+            self.assertFalse(data["ok"], key)
+        self.assertEqual(DEFAULT_CONFIG["port"], self.engine.cfg["port"])
+        self.assertEqual(DEFAULT_CONFIG["time_context_chance"], self.engine.cfg["time_context_chance"])
+        self.assertEqual(DEFAULT_CONFIG["reference_asr_review_consensus_similarity"], self.engine.cfg["reference_asr_review_consensus_similarity"])
+
+        status, data = self.post("/api/save_config", {"f5_tts_seed": "-1"})
+        self.assertEqual(200, status)
+        self.assertTrue(data["ok"])
+        self.assertEqual(-1, self.engine.cfg["f5_tts_seed"])
+        status, data = self.post("/api/save_config", {"f5_tts_seed": "-2"})
+        self.assertEqual(400, status)
+        self.assertFalse(data["ok"])
+
+    def test_malformed_host_profiles_are_rejected(self):
+        status, data = self.post("/api/save_config", {"hosts_json": "{broken"})
+        self.assertEqual(400, status)
+        self.assertFalse(data["ok"])
 
     def test_non_loopback_origin_is_rejected(self):
         status, data = self.post("/api/save_config", {"weather_city": "x"}, {"Origin": "http://evil.example"})
