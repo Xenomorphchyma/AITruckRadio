@@ -669,6 +669,13 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
 
+/* The status strip competes with two persistent actions at laptop widths.
+   Remove the least actionable metric before it gets clipped under the
+   buttons; the full values remain available in the system/readiness views. */
+@media (max-width: 1320px) {
+  .top-metric:last-child { display: none; }
+}
+
 @media (max-width: 1240px) {
   :root { --sidebar-width: 156px; }
   .top-status { padding-inline: 12px; }
@@ -676,7 +683,6 @@ kbd { padding: 3px 6px; border: 1px solid var(--line-strong); border-bottom-widt
   .run-state::after, .top-metric::after { margin-left: 11px; }
   .top-metric + .top-metric { margin-left: 10px; }
   .top-metric:nth-of-type(3) { display: none; }
-  .top-metric:last-child { display: none; }
   .plan-workspace { grid-template-columns: minmax(0, 1fr) 360px; }
   .timeline-main { grid-template-columns: 40px 56px minmax(0,1fr) 104px; gap: 8px; }
   .inspector-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
