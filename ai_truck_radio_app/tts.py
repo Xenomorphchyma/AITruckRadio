@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ai_truck_radio_app.config import (
     BASE_DIR,
@@ -38,6 +38,21 @@ from ai_truck_radio_app.ref_voice import validate_reference_transcript
 
 def host_name_or_empty(host_name: Optional[str]) -> str:
     return "" if host_name is None else str(host_name)
+
+
+def _audio_file_ready(path: Path, *, minimum_size: int = 1024) -> bool:
+    """Return whether a subprocess produced a usable audio file.
+
+    Several TTS backends report success through their process exit code before
+    the output file is flushed.  Treating an empty/partial file as a valid WAV
+    makes the failure surface later in FFmpeg and obscures the backend error.
+    A conservative size check is backend-neutral and still allows short test
+    phrases to pass.
+    """
+    try:
+        return path.is_file() and path.stat().st_size >= minimum_size
+    except OSError:
+        return False
 
 
 class Qwen3TTSWorkerClient:
@@ -534,6 +549,20 @@ class TTS:
         self.qwen3_worker: Optional[Qwen3TTSWorkerClient] = None
         self.omnivoice_worker: Optional[OmniVoiceWorkerClient] = None
         self.cache_lock = threading.RLock()
+        self.protected_cache_paths: set[Path] = set()
+        self.cache_paths_provider: Optional[Callable[[], List[Path]]] = None
+        self._cache_cleanup_depth = 0
+
+    def set_protected_cache_paths(self, paths: List[Path]) -> None:
+        """Keep files referenced by an active/queued plan during cache cleanup."""
+        with self.cache_lock:
+            protected: set[Path] = set()
+            for path in paths:
+                try:
+                    protected.add(Path(path).resolve())
+                except OSError:
+                    continue
+            self.protected_cache_paths = protected
 
     def close(self) -> None:
         if self.qwen3_worker is not None:
@@ -551,6 +580,68 @@ class TTS:
 
     def text_hash(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+    def runtime_status(self) -> Dict[str, Any]:
+        """Report cheap, local prerequisites for an on-demand backend.
+
+        This intentionally does not import a model or start a subprocess. It
+        is used by the panel to avoid advertising Piper/Silero as ready when a
+        model, helper, or executable is missing.
+        """
+        backend = str(self.cfg.get("tts_backend") or "").strip().lower()
+        if backend in {"", "none", "off", "disabled"}:
+            return {"tts_backend": backend or "none", "tts_ready": False, "tts_status": "disabled"}
+        if backend == "sapi":
+            powershell = shutil.which("powershell") or shutil.which("powershell.exe")
+            ready = os.name == "nt" and bool(powershell)
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": "on_demand" if ready else "missing_executable",
+                **({} if ready else {"tts_error": "Не найден powershell.exe для Windows SAPI."}),
+            }
+        if backend == "piper":
+            model = Path(str(self.cfg.get("piper_model", "voices/ru_RU-ruslan-medium.onnx")))
+            if not model.is_absolute():
+                model = BASE_DIR / model
+            python = str(self.cfg.get("piper_python", ".venv\\Scripts\\python.exe")).strip()
+            python_path = Path(python) if python else Path()
+            if python_path and not python_path.is_absolute():
+                python_path = BASE_DIR / python_path
+            python_ok = bool(python_path) and executable_exists(str(python_path))
+            exe = str(self.cfg.get("piper_exe", "piper")).strip()
+            exe_ok = executable_exists(exe)
+            ready = model.is_file() and (python_ok or exe_ok)
+            if ready:
+                status, error = "on_demand", ""
+            elif not model.is_file():
+                status, error = "missing_model", f"Не найдена модель Piper: {model}"
+            else:
+                status, error = "missing_executable", "Не найден Python Piper или piper.exe."
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": status,
+                **({} if ready else {"tts_error": error}),
+            }
+        if backend == "silero":
+            helper = BASE_DIR / "tools" / "silero_render.py"
+            python = str(self.cfg.get("piper_python", ".venv\\Scripts\\python.exe")).strip() or sys.executable
+            python_path = Path(python)
+            if not python_path.is_absolute():
+                python_path = BASE_DIR / python_path
+            if not executable_exists(str(python_path)):
+                python_path = Path(sys.executable)
+            ready = helper.is_file() and executable_exists(str(python_path))
+            return {
+                "tts_backend": backend,
+                "tts_ready": ready,
+                "tts_status": "on_demand" if ready else "missing_helper",
+                **({} if ready else {"tts_error": f"Не найден helper Silero: {helper}"}),
+            }
+        # Other backends expose their own worker readiness or are validated at
+        # render time. Keep the old on-demand contract for them.
+        return {"tts_backend": backend, "tts_ready": True, "tts_status": "on_demand"}
 
     def _cache_signature(self, backend: str, host_name: Optional[str], voice_cfg: Dict[str, Any]) -> str:
         """Every render-affecting setting belongs in the cache key.
@@ -649,6 +740,19 @@ class TTS:
         return True
 
     def get_or_create_dialogue_mp3(self, text: str, hosts: List[Dict[str, Any]]) -> Optional[Path]:
+        # A small cache must not evict the first speaker while the second one
+        # is being rendered. Serialize synthesis and clean only after concat.
+        with self.cache_lock:
+            self._cache_cleanup_depth += 1
+            result: Optional[Path] = None
+            try:
+                result = self._get_or_create_dialogue_mp3(text, hosts)
+                return result
+            finally:
+                self._cache_cleanup_depth -= 1
+                self.cleanup_cache(keep=[result] if result else [])
+
+    def _get_or_create_dialogue_mp3(self, text: str, hosts: List[Dict[str, Any]]) -> Optional[Path]:
         if not self.cfg.get("tts_dialogue_split_hosts", True):
             return self.get_or_create_mp3(strip_spoken_host_names(text, [str(h.get("name", "")) for h in hosts if isinstance(h, dict)]))
         segments = parse_dialogue_segments(text, hosts)
@@ -769,9 +873,13 @@ class TTS:
                     wav_path = self._qwen3_tts_to_wav(text, h, voice_cfg)
                 elif backend in {"f5_tts", "f5-tts", "f5"}:
                     wav_path = self._f5_tts_to_wav(text, h, voice_cfg)
-                else:
+                elif backend == "sapi":
                     wav_path = self._sapi_to_wav(text, h, voice_cfg)
-                if not wav_path or not wav_path.exists():
+                else:
+                    last_error = f"неизвестный TTS backend: {backend}"
+                    log(last_error)
+                    continue
+                if not wav_path or not _audio_file_ready(wav_path):
                     last_error = f"{backend}: wav не создан"
                     log(f"TTS {backend}: wav не создан")
                     continue
@@ -787,7 +895,7 @@ class TTS:
                 log(f"TTS {backend} ошибка: {e}")
                 log(traceback.format_exc())
             finally:
-                self.cleanup_cache()
+                self.cleanup_cache(keep=[out_mp3])
         if last_error:
             log(f"TTS: все backend'ы не смогли озвучить реплику. Последнее: {last_error}")
         return None
@@ -830,10 +938,16 @@ $synth.Dispose()
             log("PowerShell/SAPI не смог создать озвучку:")
             log(res.stderr.strip() or res.stdout.strip())
             return None
+        if not _audio_file_ready(wav_path):
+            log("PowerShell/SAPI завершился без пригодного WAV-файла")
+            return None
         return wav_path
 
     def _piper_to_wav(self, text: str, h: str, voice_cfg: Dict[str, Any]) -> Optional[Path]:
         wav_path = self.tmp_dir / f"host_{h}.wav"
+        # A previous failed render may have left a WAV at this deterministic
+        # path. Only an output produced by this attempt is eligible for use.
+        wav_path.unlink(missing_ok=True)
         extra = voice_cfg.get("piper_extra_args") or []
         extra_args = [str(x) for x in extra] if isinstance(extra, list) else []
 
@@ -860,7 +974,7 @@ $synth.Dispose()
             cmd.extend(extra_args)
             cmd.extend(["--", text])
             res = run_subprocess(cmd, timeout=90)
-            if res.returncode == 0 and wav_path.exists():
+            if res.returncode == 0 and _audio_file_ready(wav_path):
                 return wav_path
             log("Piper через python -m piper не смог создать озвучку:")
             log((res.stderr or res.stdout).strip())
@@ -877,20 +991,26 @@ $synth.Dispose()
             return None
         cmd = [piper_exe, "--model", str(model_path), "--output_file", str(wav_path)]
         cmd.extend(extra_args)
-        proc = subprocess.Popen(
+        wav_path.unlink(missing_ok=True)
+        # subprocess.run kills and reaps the child on timeout. A bare
+        # Popen.communicate timeout left Piper running after fallback began.
+        res = subprocess.run(
             cmd,
-            stdin=subprocess.PIPE,
+            input=text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=90,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        out, err = proc.communicate(text, timeout=90)
-        if proc.returncode != 0:
+        if res.returncode != 0:
             log("Piper не смог создать озвучку:")
-            log((err or out).strip())
+            log((res.stderr or res.stdout).strip())
+            return None
+        if not _audio_file_ready(wav_path):
+            log("Piper завершился без пригодного WAV-файла")
             return None
         return wav_path
 
@@ -1032,7 +1152,7 @@ $synth.Dispose()
         if bool(voice_cfg.get("silero_put_yo", True)):
             cmd.append("--put-yo")
         res = run_subprocess(cmd, timeout=240)
-        if res.returncode != 0 or not wav_path.exists():
+        if res.returncode != 0 or not _audio_file_ready(wav_path):
             log("Silero не смог создать озвучку:")
             log((res.stderr or res.stdout).strip())
             log("Подсказка: запусти install_silero_windows.bat. Если исходники Silero лежат не в папке проекта, укажи silero_repo_dir в config.json.")
@@ -1238,14 +1358,47 @@ $synth.Dispose()
             return False
         return out_mp3.exists() and out_mp3.stat().st_size > 1024
 
-    def cleanup_cache(self) -> None:
+    def cleanup_cache(self, *, keep: Optional[List[Path]] = None) -> None:
+        try:
+            active_paths = self.cache_paths_provider() if self.cache_paths_provider else []
+        except Exception as exc:
+            log(f"Очистка TTS-кэша пропущена: не удалось получить активные файлы: {exc}")
+            return
+        with self.cache_lock:
+            if self._cache_cleanup_depth:
+                return
+            self._cleanup_cache_locked([*(keep or []), *active_paths])
+
+    def _cleanup_cache_locked(self, keep: List[Path]) -> None:
         max_files = max(1, int(self.cfg.get("max_cached_spoken_files", 120)))
         files = sorted(
             list(self.cache_dir.glob("host_*.mp3")) + list(self.cache_dir.glob("dialogue_*.mp3")),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        for p in files[max_files:]:
+        with self.cache_lock:
+            protected = set(self.protected_cache_paths)
+        protected.update(path.resolve() for path in keep)
+        # Persisted plans are protected as well, including plans restored after
+        # an application restart when the engine has not yet rebuilt its index.
+        plan_files = set((self.cache_dir.parent / "show_plans").glob("*.json"))
+        configured_plan = Path(str(self.cfg.get("show_plan_output_file", "cache/show_plans/last_show_plan.json")))
+        if not configured_plan.is_absolute():
+            configured_plan = BASE_DIR / configured_plan
+        plan_files.add(configured_plan)
+        for plan_file in plan_files:
+            try:
+                payload = json.loads(plan_file.read_text(encoding="utf-8"))
+                for item in payload.get("items", []) if isinstance(payload, dict) else []:
+                    if isinstance(item, dict) and item.get("kind") == "speech":
+                        candidate = Path(str(item.get("path") or ""))
+                        if not candidate.is_absolute():
+                            candidate = self.cache_dir.parent / candidate
+                        protected.add(candidate.resolve())
+            except (OSError, ValueError, TypeError):
+                continue
+        removable = [p for p in files if p.resolve() not in protected]
+        for p in removable[max_files:]:
             try:
                 p.unlink()
             except Exception:

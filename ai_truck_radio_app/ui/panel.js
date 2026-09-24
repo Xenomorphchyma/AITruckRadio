@@ -339,6 +339,20 @@
     }
     form.dataset.dirty = String(dirty);
     form.classList.toggle('is-dirty', dirty);
+    const headerButton = form.id
+      ? document.querySelector(`.page-actions button[type="submit"][form="${CSS.escape(form.id)}"]`)
+      : null;
+    if (headerButton) {
+      let state = headerButton.parentElement?.querySelector('.save-state');
+      if (!state) {
+        state = document.createElement('span');
+        state.className = 'save-state';
+        state.setAttribute('role', 'status');
+        headerButton.parentElement.insertBefore(state, headerButton);
+      }
+      state.textContent = dirty ? 'Есть изменения' : 'Сохранено';
+      state.classList.toggle('dirty', dirty);
+    }
   }
 
   function updateAllFormDirtyStates() {
@@ -652,6 +666,8 @@
     if (!timeline || !empty) return;
     timeline.hidden = items.length === 0;
     empty.hidden = items.length !== 0;
+    const prepareButton = byId('prepareNextPlanBtn');
+    if (prepareButton) prepareButton.hidden = items.length === 0;
     if (!items.length) {
       timelineRenderKey = '';
       selectedPlanIdx = null;
@@ -797,17 +813,24 @@
     const app = byId('appShell');
     app?.classList.toggle('radio-running', running);
     readinessWasRunning = running;
-    setText('readyMusic', `${Number(status.music_count || 0)} треков`);
+    const musicLabel = `${Number(status.music_count || 0)} треков`;
+    setText('readyMusic', musicLabel);
+    setText('airReadyMusic', musicLabel);
     const ffmpegReady = Boolean(status.ffmpeg_ok);
     const ffprobeReady = Boolean(status.ffprobe_ok);
-    setText('readyFfmpeg', ffmpegReady && ffprobeReady ? 'готовы' : (!ffmpegReady && !ffprobeReady ? 'оба не найдены' : (!ffmpegReady ? 'FFmpeg не найден' : 'FFprobe не найден')));
+    const ffmpegLabel = ffmpegReady && ffprobeReady ? 'готовы' : (!ffmpegReady && !ffprobeReady ? 'оба не найдены' : (!ffmpegReady ? 'FFmpeg не найден' : 'FFprobe не найден'));
+    setText('readyFfmpeg', ffmpegLabel);
+    setText('airReadyFfmpeg', ffmpegLabel);
     const backend = String(status.tts_backend || cfg.tts_backend || 'none');
     const voiceState = String(status.tts_status || '');
     const voiceLabel = backend === 'none'
       ? 'выключен'
       : (status.tts_ready ? 'готов' : ({not_initialized: 'загрузится при старте', on_demand: 'по запросу', unavailable: 'недоступен'}[voiceState] || 'проверка'));
     setText('readyVoice', voiceLabel);
-    setText('readyPlan', planItems().length ? 'готов' : (status.show_plan_enabled ? 'не готов' : 'Live'));
+    setText('airReadyVoice', voiceLabel);
+    const planLabel = planItems().length ? 'готов' : (status.show_plan_enabled ? 'не готов' : 'Live');
+    setText('readyPlan', planLabel);
+    setText('airReadyPlan', planLabel);
     const error = byId('readinessError');
     if (error) {
       const friendlyError = friendlyReadinessError(status.last_error);
@@ -1099,7 +1122,11 @@
     setText('ffmpegTop', status.ffmpeg_ok ? 'готов' : 'не найден');
     const backend = String(status.tts_backend || cfg.tts_backend || 'none');
     const voiceState = String(status.tts_status || '');
-    setText('voiceTop', backend === 'none' ? 'выключен' : (status.tts_ready ? 'готов' : (voiceState === 'not_initialized' ? 'ожидает старта' : (voiceState === 'on_demand' ? 'по запросу' : 'не готов'))));
+    const voiceLabel = backend === 'none' ? 'выключен' : (status.tts_ready ? 'готов' : (voiceState === 'not_initialized' ? 'ожидает старта' : (voiceState === 'on_demand' ? 'по запросу' : 'не готов')));
+    setText('voiceTop', voiceLabel);
+    const voiceMetric = $('.status-chip-voice');
+    voiceMetric?.setAttribute('aria-label', `Голос: ${voiceLabel}`);
+    voiceMetric?.setAttribute('title', `Голос: ${voiceLabel}`);
     setText('runBadgeText', running ? 'Радио в эфире' : (starting ? 'Радио запускается' : 'Радио остановлено'));
     setText('appVersion', `${BOOT.app?.name || ''} ${status.app_version || BOOT.app?.version || ''}`.trim());
     setText('airNowTitle', running ? (status.now_playing || 'Эфир идёт') : 'Эфир остановлен');
@@ -1110,7 +1137,9 @@
       if (!button) return;
       button.disabled = false;
       const label = $('span', button);
-      if (label) label.textContent = running ? 'Выключить эфир' : (starting ? 'Отменить запуск' : 'Включить эфир');
+      const buttonLabel = running ? 'Выключить эфир' : (starting ? 'Отменить запуск' : 'Включить эфир');
+      if (label) label.textContent = buttonLabel;
+      button.title = buttonLabel;
       const icon = $('.bi', button);
       if (icon) icon.className = `bi ${running ? 'bi-stop-fill' : (starting ? 'bi-x-lg' : 'bi-play-fill')}`;
       button.classList.toggle('danger-subtle', running || starting);
@@ -1124,6 +1153,7 @@
     renderTimeline();
     updatePlayerCopy();
     renderNewsFeed();
+    updateGlobalActions();
   }
 
   function elapsedLabel(startedTs) {
@@ -1156,7 +1186,10 @@
       generateButton.disabled = cancelling;
       generateButton.classList.toggle('danger-subtle', generating);
       const label = $('span', generateButton);
-      if (label) label.textContent = generating ? (cancelling ? 'Останавливаю…' : 'Отменить подготовку') : 'Сгенерировать план';
+      const planButtonLabel = generating ? (cancelling ? 'Останавливаю…' : 'Отменить подготовку') : 'Подготовить план';
+      if (label) label.textContent = planButtonLabel;
+      generateButton.title = planButtonLabel;
+      generateButton.setAttribute('aria-label', planButtonLabel);
       const icon = $('.bi', generateButton);
       if (icon) icon.className = `bi ${generating ? 'bi-x-circle' : 'bi-stars'}`;
     }
@@ -1192,7 +1225,31 @@
     }
   }
 
-  function currentView() { return $('.view.active')?.dataset.view || 'plan'; }
+  function currentView() { return $('.view.active')?.dataset.view || 'air'; }
+
+  function setPlayerCollapsed(collapsed) {
+    const dock = byId('playerDock');
+    if (!dock) return;
+    const next = Boolean(collapsed);
+    dock.classList.toggle('is-collapsed', next);
+    byId('appShell')?.classList.toggle('player-collapsed', next);
+    byId('playerCollapseBtn')?.setAttribute('aria-expanded', String(!next));
+    byId('playerCollapseBtn')?.setAttribute('aria-label', next ? 'Развернуть плеер' : 'Свернуть плеер');
+    if (byId('playerCollapseBtn')) byId('playerCollapseBtn').title = next ? 'Развернуть плеер' : 'Свернуть плеер';
+    const icon = $('#playerCollapseBtn .bi');
+    if (icon) icon.className = `bi ${next ? 'bi-chevron-up' : 'bi-chevron-down'}`;
+  }
+
+  function updateGlobalActions() {
+    const view = currentView();
+    const planAction = byId('generatePlanTopBtn');
+    if (planAction) {
+      const visible = view === 'air' || (view === 'plan' && (planItems().length > 0 || Boolean(status.show_plan_generating)));
+      planAction.hidden = !visible;
+      planAction.setAttribute('aria-hidden', String(!visible));
+      planAction.tabIndex = visible ? 0 : -1;
+    }
+  }
 
   function setSidebarOpen(open) {
     byId('sidebar')?.classList.toggle('open', Boolean(open));
@@ -1216,7 +1273,7 @@
   }
 
   function navigate(view, {replace = false} = {}) {
-    if (!document.querySelector(`[data-view="${CSS.escape(view)}"]`)) view = 'plan';
+    if (!document.querySelector(`[data-view="${CSS.escape(view)}"]`)) view = 'air';
     $$('.view').forEach((panel) => {
       const active = panel.dataset.view === view;
       panel.classList.toggle('active', active);
@@ -1228,6 +1285,8 @@
       if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
     });
     setSidebarOpen(false);
+    setPlayerCollapsed(['music', 'news', 'hosts', 'fun', 'voice', 'system'].includes(view));
+    updateGlobalActions();
     const hash = `#${view}`;
     if (location.hash !== hash) history[replace ? 'replaceState' : 'pushState'](null, '', hash);
     localStorage.setItem('aiTruckRadio.activeView', view);
@@ -1873,13 +1932,7 @@
     byId('liveEdgeBtn')?.addEventListener('click', goLiveEdge);
     byId('playerCollapseBtn')?.addEventListener('click', () => {
       const dock = byId('playerDock');
-      dock?.classList.toggle('is-collapsed');
-      const collapsed = dock?.classList.contains('is-collapsed');
-      byId('appShell')?.classList.toggle('player-collapsed', Boolean(collapsed));
-      byId('playerCollapseBtn')?.setAttribute('aria-expanded', String(!collapsed));
-      byId('playerCollapseBtn')?.setAttribute('aria-label', collapsed ? 'Развернуть плеер' : 'Свернуть плеер');
-      const icon = $('#playerCollapseBtn .bi');
-      if (icon) icon.className = `bi ${collapsed ? 'bi-chevron-up' : 'bi-chevron-down'}`;
+      setPlayerCollapsed(!dock?.classList.contains('is-collapsed'));
     });
     const volume = byId('playerVolume');
     const player = byId('radioPlayer');
@@ -1923,7 +1976,7 @@
   updateDependencies();
   updateResetButtons();
   updateAllFormDirtyStates();
-  const initialView = location.hash.slice(1) || localStorage.getItem('aiTruckRadio.activeView') || 'plan';
+  const initialView = location.hash.slice(1) || localStorage.getItem('aiTruckRadio.activeView') || 'air';
   navigate(initialView, {replace: true});
   setText('planDate', new Intl.DateTimeFormat('ru-RU', {weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'}).format(new Date()));
   updateStatusUi();

@@ -33,6 +33,13 @@ def test_tts_batch_changes_to_project_root() -> None:
     assert '".venv\\scripts\\python.exe" "tools\\test_tts_backend.py"' in script
 
 
+def test_tts_cli_reads_config_without_startup_migration() -> None:
+    source = (PROJECT_ROOT / "tools" / "test_tts_backend.py").read_text(encoding="utf-8").casefold()
+    assert "load_config" not in source
+    assert "temporarydirectory" in source
+    assert "--allow-fallback" in source
+
+
 def test_omnivoice_probe_fails_when_required_import_is_missing(monkeypatch) -> None:
     real_import = builtins.__import__
 

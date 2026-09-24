@@ -14,32 +14,38 @@
       <button class="icon-button mobile-menu" id="mobileMenuBtn" type="button" aria-label="Открыть меню" aria-expanded="false">
         <i class="bi bi-list" aria-hidden="true"></i>
       </button>
-      <a class="brand" href="#plan" data-nav-target="plan" aria-label="Волна FM — план эфира">
+      <a class="brand" href="#air" data-nav-target="air" aria-label="Волна FM — открыть эфир">
         <span class="brand-name" id="stationName">Волна FM</span>
       </a>
       <div class="top-status" aria-label="Состояние системы">
         <span class="run-state" id="runBadge"><span class="status-dot"></span><span id="runBadgeText">Радио остановлено</span></span>
-        <span class="top-metric"><i class="bi bi-music-note-beamed" aria-hidden="true"></i><b id="musicCount">0</b><span>треков</span><i class="bi bi-check-circle-fill metric-ok" id="musicReadyIcon" aria-hidden="true"></i></span>
-        <span class="top-metric"><i class="bi bi-hdd-rack" aria-hidden="true"></i><span>FFmpeg</span><b id="ffmpegTop">проверка</b></span>
-        <span class="top-metric"><i class="bi bi-soundwave" aria-hidden="true"></i><span>OmniVoice</span><b id="voiceTop">настроен</b></span>
+        <span class="top-metric status-chip" title="Количество доступных треков"><i class="bi bi-music-note-beamed" aria-hidden="true"></i><b id="musicCount">0</b><span>треков</span><i class="bi bi-check-circle-fill metric-ok" id="musicReadyIcon" aria-hidden="true"></i></span>
+        <span class="top-metric status-chip" title="Проверка FFmpeg"><i class="bi bi-hdd-rack" aria-hidden="true"></i><span>FFmpeg</span><b id="ffmpegTop">проверка</b></span>
+        <span class="top-metric status-chip status-chip-voice" title="Состояние озвучки"><i class="bi bi-soundwave" aria-hidden="true"></i><span>Голос</span><b id="voiceTop">настроен</b></span>
       </div>
       <div class="top-actions">
-        <button class="button secondary" id="generatePlanTopBtn" type="button"><i class="bi bi-stars" aria-hidden="true"></i><span>Сгенерировать план</span></button>
-        <button class="button primary" id="radioToggleBtn" type="button"><i class="bi bi-play-fill" aria-hidden="true"></i><span>Включить эфир</span></button>
-        <button class="icon-button" type="button" data-nav-target="system" aria-label="Открыть настройки"><i class="bi bi-gear" aria-hidden="true"></i></button>
+        <button class="button secondary top-plan-action" id="generatePlanTopBtn" type="button" aria-label="Подготовить план" title="Подготовить план"><i class="bi bi-stars" aria-hidden="true"></i><span>Подготовить план</span></button>
+        <button class="button primary" id="radioToggleBtn" type="button" title="Включить эфир"><i class="bi bi-play-fill" aria-hidden="true"></i><span>Включить эфир</span></button>
+        <button class="icon-button" type="button" data-nav-target="system" aria-label="Открыть настройки" title="Открыть настройки"><i class="bi bi-gear" aria-hidden="true"></i></button>
       </div>
     </header>
 
     <aside class="sidebar" id="sidebar" aria-label="Разделы панели">
       <nav class="main-nav">
-        <button type="button" class="nav-item" data-view-target="air"><i class="bi bi-broadcast" aria-hidden="true"></i><span>Эфир</span></button>
-        <button type="button" class="nav-item active" data-view-target="plan" aria-current="page"><i class="bi bi-calendar3" aria-hidden="true"></i><span>План</span></button>
-        <button type="button" class="nav-item" data-view-target="music"><i class="bi bi-music-note-list" aria-hidden="true"></i><span>Музыка</span></button>
-        <button type="button" class="nav-item" data-view-target="news"><i class="bi bi-newspaper" aria-hidden="true"></i><span>Новости</span></button>
-        <button type="button" class="nav-item" data-view-target="hosts"><i class="bi bi-person" aria-hidden="true"></i><span>Ведущие</span></button>
-        <button type="button" class="nav-item" data-view-target="fun"><i class="bi bi-grid" aria-hidden="true"></i><span>Рубрики</span></button>
-        <button type="button" class="nav-item" data-view-target="voice"><i class="bi bi-mic" aria-hidden="true"></i><span>Голос</span></button>
-        <button type="button" class="nav-item" data-view-target="system"><i class="bi bi-gear" aria-hidden="true"></i><span>Система</span></button>
+        <div class="nav-group" role="group" aria-label="Управление эфиром"><p class="nav-group-title">Эфир</p>
+          <button type="button" class="nav-item active" data-view-target="air" aria-current="page" title="Эфир"><i class="bi bi-broadcast" aria-hidden="true"></i><span>Эфир</span></button>
+          <button type="button" class="nav-item" data-view-target="plan" title="План"><i class="bi bi-calendar3" aria-hidden="true"></i><span>План</span></button>
+        </div>
+        <div class="nav-group" role="group" aria-label="Контент"><p class="nav-group-title">Контент</p>
+          <button type="button" class="nav-item" data-view-target="music" title="Музыка"><i class="bi bi-music-note-list" aria-hidden="true"></i><span>Музыка</span></button>
+          <button type="button" class="nav-item" data-view-target="news" title="Новости"><i class="bi bi-newspaper" aria-hidden="true"></i><span>Новости</span></button>
+          <button type="button" class="nav-item" data-view-target="fun" title="Рубрики"><i class="bi bi-grid" aria-hidden="true"></i><span>Рубрики</span></button>
+        </div>
+        <div class="nav-group" role="group" aria-label="Настройка команды"><p class="nav-group-title">Команда и система</p>
+          <button type="button" class="nav-item" data-view-target="hosts" title="Ведущие"><i class="bi bi-person" aria-hidden="true"></i><span>Ведущие</span></button>
+          <button type="button" class="nav-item" data-view-target="voice" title="Голос"><i class="bi bi-mic" aria-hidden="true"></i><span>Голос</span></button>
+          <button type="button" class="nav-item" data-view-target="system" title="Система"><i class="bi bi-gear" aria-hidden="true"></i><span>Система</span></button>
+        </div>
       </nav>
       <div class="sidebar-foot">
         <span class="version" id="appVersion"></span>
@@ -75,13 +81,22 @@
             <div id="airNextList" class="compact-list"></div>
           </aside>
         </div>
+        <section class="air-readiness" aria-labelledby="airReadinessTitle">
+          <div class="air-readiness-head"><div><p class="eyebrow">Быстрая проверка</p><h2 id="airReadinessTitle">Готовность к эфиру</h2></div><button class="text-button" type="button" data-nav-target="system">Открыть настройки<i class="bi bi-arrow-right" aria-hidden="true"></i></button></div>
+          <ul class="readiness-list compact-readiness-list">
+            <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>Музыка</span><b id="airReadyMusic">проверка</b></li>
+            <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>FFmpeg</span><b id="airReadyFfmpeg">проверка</b></li>
+            <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>Голос</span><b id="airReadyVoice">проверка</b></li>
+            <li><i class="bi bi-check-circle-fill" aria-hidden="true"></i><span>План</span><b id="airReadyPlan">Live</b></li>
+          </ul>
+        </section>
         <details class="settings-block">
           <summary><span><i class="bi bi-sliders" aria-hidden="true"></i>Настройки Live</span><span class="summary-hint">Частота и содержание выходов ведущих</span></summary>
           <form class="settings-form" data-settings-form="live"><div class="settings-source" data-settings-source="live"></div><div class="form-actions"><button class="button primary" type="submit">Сохранить Live</button></div></form>
         </details>
       </section>
 
-      <section class="view active" data-view="plan" aria-labelledby="planTitle">
+      <section class="view" data-view="plan" aria-labelledby="planTitle" hidden>
         <div class="plan-workspace">
           <div class="plan-column">
             <div class="page-head plan-head">
@@ -221,7 +236,7 @@
       <div class="player-controls"><button class="icon-button" id="playerBackBtn" type="button" aria-label="Назад на 15 секунд" disabled><i class="bi bi-skip-start-fill" aria-hidden="true"></i></button><button class="icon-button" id="playBtn" type="button" aria-label="Воспроизвести эфир"><i class="bi bi-play-fill" aria-hidden="true"></i></button><button class="icon-button" id="skipPlayerBtn" type="button" aria-label="Следующий элемент"><i class="bi bi-skip-end-fill" aria-hidden="true"></i></button></div>
       <label class="volume-control"><i class="bi bi-volume-up" aria-hidden="true"></i><span class="sr-only">Громкость</span><input id="playerVolume" type="range" min="0" max="1" step="0.01" value="0.73"></label>
       <button class="button secondary live-edge" id="liveEdgeBtn" type="button"><i class="bi bi-broadcast" aria-hidden="true"></i><span>К эфиру</span><small id="playerTime"></small></button>
-      <button class="icon-button player-collapse-direct" id="playerCollapseBtn" type="button" aria-label="Свернуть плеер" aria-expanded="true" aria-controls="playerDock"><i class="bi bi-chevron-down" aria-hidden="true"></i></button>
+      <button class="icon-button player-collapse-direct" id="playerCollapseBtn" type="button" aria-label="Свернуть плеер" title="Свернуть плеер" aria-expanded="true" aria-controls="playerDock"><i class="bi bi-chevron-down" aria-hidden="true"></i></button>
     </footer>
   </div>
 
